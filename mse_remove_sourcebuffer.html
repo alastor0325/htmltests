@@ -35,8 +35,8 @@ function sourceOpen(e) {
           mediaSource.sourceBuffers.addEventListener('removesourcebuffer',
             () => {
               console.log("remove buffer finished.");
-            },
-            {once : true});
+              console.log(`media source duration=${mediaSource.duration}`);
+            }, {once : true});
           mediaSource.removeSourceBuffer(sourceBuffer);
         }
         removeBuffer();
