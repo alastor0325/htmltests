@@ -3,7 +3,10 @@
   <title></title>
 </head>
 <body>
-
+<div>
+Duration=<a id="text"></a>
+</div>
+<br>
 <video id="video" controls source></video>
 <script type="application/javascript">
 var vidElement = document.querySelector('video');
@@ -31,6 +34,7 @@ function sourceOpen(e) {
       sourceBuffer.onupdateend = function () {
         sourceBuffer.onupdateend = null;
         console.log("append finished.");
+        document.getElementById("text").innerHTML = mediaSource.duration;
       };
       sourceBuffer.appendBuffer(arrayBuffer);
     });
