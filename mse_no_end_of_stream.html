@@ -5,6 +5,7 @@
 <body>
 <div>
 Duration=<a id="text-duration">NaN</a><br>
+Current position=<a id="text-current-position">NaN</a><br>
 Receive ended event=<a id="text-ended-event">false</a>
 </div>
 <br>
@@ -27,6 +28,8 @@ vidElement.onended = function() {
 vidElement.ontimeupdate = function() {
   document.getElementById("text-ended-event").innerHTML =
     vidElement.ended ? "true" : "false";
+  document.getElementById("text-current-position").innerHTML =
+    vidElement.currentTime;
 }
 
 function sourceOpen(e) {
