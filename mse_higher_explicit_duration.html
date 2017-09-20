@@ -29,9 +29,10 @@ function sourceOpen(e) {
       return response.arrayBuffer();
     })
     .then(function(arrayBuffer) {
-      sourceBuffer.addEventListener('updateend', function(e) {
+      sourceBuffer.onupdateend = function () {
+        sourceBuffer.onupdateend = null;
         mediaSource.endOfStream();
-      }, { once : true });
+      };
       sourceBuffer.appendBuffer(arrayBuffer);
     });
 }
