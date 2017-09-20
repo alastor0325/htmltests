@@ -3,7 +3,11 @@
   <title></title>
 </head>
 <body>
-
+<div>
+Duration=<a id="text-duration">NaN</a><br>
+Receive ended event=<a id="text-ended-event">false</a>
+</div>
+<br>
 <video id="video" controls source></video>
 <script type="application/javascript">
 var vidElement = document.querySelector('video');
@@ -14,6 +18,15 @@ if (window.MediaSource) {
   mediaSource.addEventListener('sourceopen', sourceOpen);
 } else {
   console.log("The Media Source Extensions API is not supported.")
+}
+
+vidElement.onended = function() {
+  console.log("ended!!!!");
+}
+
+vidElement.ontimeupdate = function() {
+  document.getElementById("text-ended-event").innerHTML =
+    vidElement.ended ? "true" : "false";
 }
 
 function sourceOpen(e) {
