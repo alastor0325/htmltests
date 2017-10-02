@@ -1,0 +1,97 @@
+<html>
+<head>
+  <script>
+  var C_MIN_BUFFER_TIME = 3;
+
+  var gVideo = null;
+  var gMediaSource = null;
+  var gDataStart = 0;
+  var gSurceBuffer = null;
+  var gCanUpdate = true;
+  var gDataBuffer = null;
+
+  function AddData()
+  {
+    gCanUpdate = false;
+
+    var buffersize = 20000;
+    var end = gDataStart + buffersize;
+
+    var lTmpBuff = gDataBuffer.slice(gDataStart, end);
+    //console.log(lTmpBuff.byteLength + ', ' + gDataStart);
+
+    if (lTmpBuff.byteLength > 0)
+      gSurceBuffer.appendBuffer(lTmpBuff);
+    else
+      gSurceBuffer.removeEventListener("updateend", onUpdateEnd);
+
+    gDataStart = gDataStart + buffersize;
+  }
+
+  function onUpdateEnd()
+  {
+    gCanUpdate = true;
+  }
+
+  function CheckBuffer()
+  {
+    var lTimeDiff = 0;
+
+    if (gSurceBuffer !== null && gSurceBuffer.buffered.length > 0)
+    {
+      lTimeDiff = gSurceBuffer.buffered.end(gSurceBuffer.buffered.length - 1) - gVideo.currentTime;
+
+      if (lTimeDiff < C_MIN_BUFFER_TIME)
+      {
+        if (gCanUpdate)
+          AddData();
+      }
+
+      console.log(`buffer difference=${lTimeDiff}, currentTime=${gVideo.currentTime}`);
+    }
+  }
+
+  function onSourceOpen(e)
+  {
+    gSurceBuffer = gMediaSource.addSourceBuffer('video/webm; codecs="vorbis,vp8"');
+    gSurceBuffer.addEventListener("updateend", onUpdateEnd);
+
+    setInterval(function() {
+      CheckBuffer();
+    }, 100);
+
+    AddData();
+    gVideo.play();
+  }
+
+  function onOpenFile(event)
+  {
+    var input = event.target;
+
+    gDataStart = 0;
+    gCanUpdate = true;
+
+    var reader = new FileReader();
+    reader.onload = function(){
+      gDataBuffer = reader.result;
+
+      console.log(gDataBuffer.byteLength);
+
+      gMediaSource = new MediaSource();
+      gMediaSource.addEventListener('sourceopen', onSourceOpen, false);
+
+      gVideo = document.querySelector('video');
+      gVideo.src = window.URL.createObjectURL(gMediaSource);
+    };
+    reader.readAsArrayBuffer(input.files[0]);
+  }
+  </script>
+
+</head>
+<body>
+  <div>
+    <input type="file" onchange="onOpenFile(event)"><br>
+    <video autoplay="true" width="640" height="480" controls></video>
+  </div>
+</body>
+</html>
