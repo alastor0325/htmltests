@@ -1,0 +1,29 @@
+<html>
+<head>
+  <title>call video.play() multiple times</title>
+</head>
+<body>
+Description : This test will automatically call video.play() every second until it starts playing</br>
+Result : <a id="text"></a></br>
+</br>
+<video id="v1" src="../files/bunny.mp4" controls></video>
+<script type="text/javascript">
+  var video = document.getElementById("v1");
+  var text = document.getElementById("text");
+  var failCount = 0;
+
+  function play_until_sucess() {
+    video.play().then(function() {
+      text.innerHTML = "play success";
+    }, function() {
+      text.innerHTML = `play rejected, fail count=${++failCount}`;
+      setTimeout(function() {
+        play_until_sucess();
+      }, 1000);
+    });
+  }
+
+  play_until_sucess();
+</script>
+</body>
+</html>
