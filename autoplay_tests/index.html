@@ -3,23 +3,22 @@
   <title>autoplay test cases</title>
 </head>
 <body>
-<h1>Firefox Autoplay Test Cases</h1><br>
+<h1>Firefox Autoplay Media Test Cases</h1><br>
 <b>Audible autoplay media<br></b>
 <a href="autoplay_test1.html">test01</a> : autoplay keyword</br>
 <a href="autoplay_test2.html">test02</a> : automatically call video.play() until success</br>
-<a href="autoplay_test3.html">test03</a> : autoplay keyword video from same domain iframe</br>
-<a href="autoplay_test4.html">test04</a> : automatically call video.play() until success from same domain iframe</br>
-<a href="autoplay_test5.html">test05</a> : autoplay keyword video from different domain iframe</br>
-<a href="autoplay_test6.html">test06</a> : automatically call video.play() until success from different domain iframe</br>
+<a href="autoplay_test3.html">test03</a> : autoplay keyword video from iframes</br>
+<a href="autoplay_test4.html">test04</a> : automatically call video.play() until success from  iframes</br>
 
 <br>
 <br>
 
 <b>Non-audible autoplay media<br></b>
-<i> with autoplay keyword</i><br>
-<a href="./non-audible-test/autoplay_test1.html">test01</a> : video's volume is zero</br>
-<a href="./non-audible-test/autoplay_test2.html">test02</a> : video is muted</br>
-<a href="./non-audible-test/autoplay_test3.html">test03</a> : video doesn't have an audio track</br>
+<a href="./non-audible-test/autoplay_test_muted.html">test01</a> : muted video</br>
+<a href="./non-audible-test/autoplay_test_noaudiotrack.html">test02</a> : video without an audio track</br>
+<a href="./non-audible-test/autoplay_test_iframe_muted.html">test03</a> : autoplay muted video from iframes</br>
+<a href="./non-audible-test/autoplay_test_iframe_noaudiotrack.html">test04</a> : video without an audio track from iframes</br>
+
 <div style="visibility:hidden">
   <a href="">test</a></br>
 </div>
