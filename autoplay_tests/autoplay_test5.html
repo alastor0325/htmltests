@@ -1,0 +1,30 @@
+<html>
+<head>
+  <title>Three layers iframe hierarchy</title>
+</head>
+<body>
+Description : This page has one child and one grand child, child is from different domain (updog) and grand child is from same domain (github.io).</br>
+Main frame video result : <a id="text"></a></br>
+</br>
+</body>
+<iframe src="https://media-testing.updog.co/autoplay/play-video-from-githubio.html" height="400" width="400"></iframe>
+<video id="v1" src="../files/bunny.mp4" controls></video>
+<script type="text/javascript">
+  var video = document.getElementById("v1");
+  var text = document.getElementById("text");
+  var failCount = 0;
+
+  function play_until_sucess() {
+    video.play().then(function() {
+      text.innerHTML = "play success";
+    }, function() {
+      text.innerHTML = `play rejected, fail count=${++failCount}`;
+      setTimeout(function() {
+        play_until_sucess();
+      }, 1000);
+    });
+  }
+
+  play_until_sucess();
+</script>
+</html>
