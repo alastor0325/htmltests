@@ -9,6 +9,7 @@ Result : <a id="text"></a></br>
 <video id="v1" src="../files/bunny.mp4" controls></video>
 <script type="text/javascript">
   var video = document.getElementById("v1");
+  video.preload = "auto";
   var text = document.getElementById("text");
   var failCount = 0;
 
@@ -23,7 +24,9 @@ Result : <a id="text"></a></br>
     });
   }
 
-  play_until_sucess();
+  video.oncanplay = () => {
+    play_until_sucess();
+  };
 </script>
 </body>
 </html>
