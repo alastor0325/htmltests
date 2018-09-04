@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title></title>
+</head>
+<body>
+<script type="text/javascript">
+    var audioElement = document.createElement('audio');
+    audioElement.controls = true;
+    audioElement.preload = 'none';
+
+    RestartPlayback(audioElement);
+    audioElement.addEventListener("canplay", StartPlayingMedia, false);
+    audioElement.addEventListener("ended", RestartPlaybackCallback, false);
+    audioElement.addEventListener("error", RestartPlaybackCallback, false);
+    audioElement.addEventListener("stalled", RestartPlaybackCallback, false);
+    audioElement.addEventListener("suspend", RestartPlaybackCallback, false);
+
+    var TimerVar = 0;
+    var FailedCount = 0;
+
+    function StartPlayingMedia()
+    {
+        console.log('Playing.');
+        clearTimeout(TimerVar);
+        TimerVar = 0;
+        FailedCount = 0;
+    }
+
+    function RestartPlaybackCallback()
+    {
+        if (++FailedCount == 1)
+        {
+            console.log('RestartPlayback Quick Hit.');
+            RestartPlayback(this);
+        }
+        else if (!TimerVar)
+        {
+            console.log('Timer Hit.');
+            TimerVar = setTimeout(RestartSavedPlayback, 3000);
+        }
+    }
+
+    function RestartSavedPlayback()
+    {
+        console.log('RestartTimerPlayback Hit.');
+        RestartPlayback(audioElement);
+        clearTimeout(TimerVar);
+        TimerVar = 0;
+    }
+
+    function RestartPlayback(element)
+    {
+        element.pause();
+        element.removeAttribute('src');
+        element.setAttribute('src', 'https://alastor0325.github.io/htmltests/files/audio.ogg');
+        element.load();
+        element.play(); /* FireFox needs this for some reason, the Stream won't play without it. */
+    }
+</script>
+</body>
+</html>
