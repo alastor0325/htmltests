@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title></title>
+</head>
+<body>
+<video id= "v" controls src="https://bug1262276.bmoattachments.org/attachment.cgi?id=8738279"></video>
+<script type="text/javascript">
+let video = document.getElementById("v");
+
+video.addEventListener("canplaythrough", () => {
+	video.play();
+}, { once : true });
+
+video.ontimeupdate = () => {
+	if (video.seekable && video.seekable.end(0) > 10.0) {
+		video.currentTime = 10.0;
+		video.ontimeupdate = null;
+	}
+}
+
+</script>
+</body>
+</html>
