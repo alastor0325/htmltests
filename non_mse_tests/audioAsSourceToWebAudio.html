@@ -1,0 +1,51 @@
+<!-- Sample for simple Autoplay with HTML5 Audio - no issue -->
+<!-- <audio src="passesimple.mp3" autoplay loop id="test"></audio>
+<input type="button" onclick="play()" value="Play with user interaction" id="button" />
+
+function play() {
+	var test = document.getElementById('test');
+	if(!test.paused) return;
+	test.play();
+}
+
+document.addEventListener('visibilitychange', function() {
+	if(document.hidden) test.pause()
+	else test.play()
+}, false);
+
+</script> -->
+
+<!-- Sample for Audio and AudioContext.createMediaElementSource - sound may no longer resume after switching tab -->
+<audio src="passesimple.mp3" loop controls></audio>
+<pre></pre>
+
+<script>
+
+var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+var myAudio = document.querySelector('audio');
+var pre = document.querySelector('pre');
+var myScript = document.querySelector('script');
+
+pre.innerHTML = myScript.innerHTML;
+
+// Create a MediaElementAudioSourceNode
+// Feed the HTMLMediaElement into it
+var source = audioCtx.createMediaElementSource(myAudio);
+
+// Create a gain node
+var gainNode = audioCtx.createGain();
+
+
+
+// connect the AudioBufferSourceNode to the gainNode
+// and the gainNode to the destination, so we can play the
+// music and adjust the volume using the mouse cursor
+source.connect(gainNode);
+gainNode.connect(audioCtx.destination);
+
+document.addEventListener('visibilitychange', function() {
+	if(document.hidden) myAudio.pause()
+	else myAudio.play()
+}, false);
+</script>
+
