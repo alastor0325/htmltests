@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<head>
+  <title>create AudioContext on click</title>
+  <meta content="text/html;charset=utf-8" http-equiv="Content-Type">
+  <meta content="utf-8" http-equiv="encoding">
+</head>
+<script type="text/javascript">
+
+  document.addEventListener("click", () => {
+    var ac = new AudioContext();
+    var dest = ac.destination;
+    var osc = ac.createOscillator();
+    osc.connect(dest);
+    osc.start();
+  }, { once: true});
+
+  function start_webaudio() {
+    ac.resume();
+  }
+
+  function stop_webaudio() {
+    ac.suspend();
+  }
+</script>
+<body>
+<button id="start" onclick="start_webaudio()">Start</button>
+<button id="stop" onclick="stop_webaudio()">Stop</button>
+</body>
