@@ -1,4 +1,4 @@
-<audio src="passesimple.mp3" loop controls></audio>
+<audio id="a" src="passesimple.mp3" preload="auto" loop controls></audio>
 <pre></pre>
 
 <script>
@@ -12,15 +12,12 @@ pre.innerHTML = myScript.innerHTML;
 
 // Create a MediaElementAudioSourceNode
 // Feed the HTMLMediaElement into it
-var source = audioCtx.createMediaElementSource(myAudio);
+let audio = document.getElementById("a");
+audio.oncanplay = () => {
+  console.log("on canplay")
+  let source = audioCtx.createMediaElementSource(myAudio);
+  source.connect(audioCtx.destination);
+};
 
-// Create a gain node
-var gainNode = audioCtx.createGain();
-
-// connect the AudioBufferSourceNode to the gainNode
-// and the gainNode to the destination, so we can play the
-// music and adjust the volume using the mouse cursor
-source.connect(gainNode);
-gainNode.connect(audioCtx.destination);
 </script>
 
