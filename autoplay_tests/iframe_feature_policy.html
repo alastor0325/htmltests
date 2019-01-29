@@ -1,0 +1,30 @@
+<html>
+<head>
+  <title>iframe with feature 'autoplay'</title>
+</head>
+<body>
+Description : automatically call video.play() until it starts playing, iframe which loads same domain url has 'autoplay *' feature</br>
+Main frame video result : <a id="text"></a></br>
+</br>
+</body>
+<iframe src="./autoplay_test2.html" height="400" width="800" allow="autoplay *"></iframe>
+<video id="v1" src="../files/bunny.mp4" controls></video>
+<script type="text/javascript">
+  var video = document.getElementById("v1");
+  var text = document.getElementById("text");
+  var failCount = 0;
+
+  function play_until_sucess() {
+    video.play().then(function() {
+      text.innerHTML = "play success";
+    }, function() {
+      text.innerHTML = `play rejected, fail count=${++failCount}`;
+      setTimeout(function() {
+        play_until_sucess();
+      }, 1000);
+    });
+  }
+
+  play_until_sucess();
+</script>
+</html>
