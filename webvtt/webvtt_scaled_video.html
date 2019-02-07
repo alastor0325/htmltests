@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Video Subtitle Test</title>
+  <style>
+	.container {
+		display: table;
+		width: 100%;
+	}
+	.container > div {
+		transform-origin: top left;
+	}
+  </style>
+</head>
+<body>
+  <div class="container">
+	  <div>
+		<h1>Not transformed video</h1>
+		<video  controls autostart>
+		   <source src="./files/movie.mp4" type="video/mp4">
+		   <track label="English" kind="subtitles" srclang="en" src="./files/movie.webvtt" default>
+	   </video>
+	  </div>
+  </div>
+  <div class="container">
+	  <div style="transform:scale(0.7)">
+		<h1>Transformed video (smaller)</h1>
+		<video controls autostart>
+		   <source src="./files/movie.mp4" type="video/mp4">
+		   <track label="English" kind="subtitles" srclang="en" src="./files/movie.webvtt" default>
+	   </video>
+	  </div>
+  </div>
+  <div class="container" style="margin-bottom:200px">
+	  <div style="transform:scale(1.5)">
+		<h1>Transformed video (bigger)</h1>
+		<video controls autostart>
+		   <source src="./files/movie.mp4" type="video/mp4">
+		   <track label="English" kind="subtitles" srclang="en" src="./files/movie.webvtt" default>
+	   </video>
+	  </div>
+  </div>
+</body>
+</html>
