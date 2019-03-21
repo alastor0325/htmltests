@@ -1,0 +1,11 @@
+IsRecivedEnded:<p id="result">false</p>
+<video id="v" controls width="640" height="480" src="http://ostsee-life.nabu.de/scenes/S_100/360/4096x2048/bad/S_100_luftaufnahme_4096x2048_0_0.mp4"></video>
+<script type="text/javascript">
+let v = document.getElementById("v");
+v.onplaying = () => {
+    document.getElementById("result").innerHTML = "false";
+}
+v.onended = () => {
+    document.getElementById("result").innerHTML = "true";
+}
+</script>
