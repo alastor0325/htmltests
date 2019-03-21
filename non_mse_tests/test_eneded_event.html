@@ -1,3 +1,8 @@
+<html>
+<head>
+  <title>test video's "ended" event</title>
+</head>
+<body>
 IsRecivedEnded:<p id="result">false</p>
 <video id="v" controls width="640" height="480" src="http://ostsee-life.nabu.de/scenes/S_100/360/4096x2048/bad/S_100_luftaufnahme_4096x2048_0_0.mp4"></video>
 <script type="text/javascript">
@@ -9,3 +14,7 @@ v.onended = () => {
     document.getElementById("result").innerHTML = "true";
 }
 </script>
+</body>
+</html>
+
+
