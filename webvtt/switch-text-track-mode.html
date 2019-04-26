@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>switch text track between `showing` and `hidden`</title>
+</head>
+<body>
+<button onclick="switchMode()">switch mode between `showing` and `hidden`</button></br></br>
+<video id="v" controls autoplay loop src="./files/movie.mp4"></video>
+<script type="text/javascript">
+var video = document.getElementById("v");
+var track = video.addTextTrack("subtitles");
+track.mode =  "showing";
+track.addCue(new VTTCue(0, 14, "hello"));
+
+function switchMode() {
+  let oldMode = track.mode;
+  track.mode = oldMode == "hidden" ? "showing" : "hidden";
+  console.log(`change mode from ${oldMode} to ${track.mode}`);
+}
+</script>
+</body>
+</html>
