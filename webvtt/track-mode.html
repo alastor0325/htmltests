@@ -36,14 +36,11 @@
 
             video.src = "./files/movie.mp4";
             video.oncanplay = () => {
-                try {
-                    video.play();
-                } catch (e) {
-                    console.log(e);
-                }
-
-                // Wait for end of first cue (no events should fire while track is disabled).
-                setTimeout(testHiddenAndShowing, 400);
+                video.play().then(() => {
+                    setTimeout(testHiddenAndShowing, 400);
+                }, () => {
+                    console.log("play was rejected");
+                })
                 video.oncanplay = null;
             }
         }
