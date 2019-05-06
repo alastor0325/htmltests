@@ -36,7 +36,12 @@
 
             video.src = "./files/movie.mp4";
             video.oncanplay = () => {
-                video.play();
+                try {
+                    video.play();
+                } catch (e) {
+                    console.log(e);
+                }
+
                 // Wait for end of first cue (no events should fire while track is disabled).
                 setTimeout(testHiddenAndShowing, 400);
                 video.oncanplay = null;
