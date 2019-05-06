@@ -35,9 +35,12 @@
             setModeAndCheck("disabled");
 
             video.src = "./files/movie.mp4";
-            video.play();
-            // Wait for end of first cue (no events should fire while track is disabled).
-            setTimeout(testHiddenAndShowing, 400);
+            video.oncanplay = () => {
+                video.play();
+                // Wait for end of first cue (no events should fire while track is disabled).
+                setTimeout(testHiddenAndShowing, 400);
+                video.oncanplay = null;
+            }
         }
 
         track.oncuechange = function(event) {
