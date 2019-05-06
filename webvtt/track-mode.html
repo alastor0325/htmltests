@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<title>TextTrack mode attribute</title>
+<video>
+    <track src="./files/captions-fast.vtt" default>
+    <script>
+
+        var video = document.querySelector("video");
+        var track = document.querySelector("track");
+        track.onload = trackLoaded;
+
+        var cueCount = 0;
+        var textTrack;
+        function trackLoaded() {
+            textTrack = track.track;
+            // Test default attribute value.
+            // Set to bogus value, should return default.
+            var value = "bogus";
+            textTrack.mode = value;
+
+            // Set to numeric value (no longer supported), should return default.
+            textTrack.mode = 2;
+
+
+            for (let cue of textTrack.cues) {
+                cue.onenter = (target) => {
+                    console.log(`enter, startTime=${cue.startTime}`);
+                }
+                cue.onexit = () => {
+                    console.log(`exit, endTime=${cue.endTime}`);
+                }
+            }
+
+            console.log(`@@ textTrack.cues.length=${textTrack.cues.length}`);
+            // Set to known values.
+            setModeAndCheck("disabled");
+
+            video.src = "./files/movie.mp4";
+            video.play();
+            // Wait for end of first cue (no events should fire while track is disabled).
+            setTimeout(testHiddenAndShowing, 400);
+        }
+
+        track.oncuechange = function(event) {
+            cueCount++;
+            console.log(`cueCount=${cueCount}, total length=${textTrack.cues.length}`);
+        };
+
+        function setModeAndCheck(value) {
+            textTrack.mode =  value;
+        }
+
+        function testHiddenAndShowing() {
+            setModeAndCheck("hidden");
+            setModeAndCheck("showing");
+        }
+    </script>
+</video>
