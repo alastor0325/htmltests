@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Preload VTT Test</title>
+</head>
+<body>
+Preload : Metadata
+</br>
+<video preload="metadata" src="./files/movie.mp4" controls autostart>
+   <track label="English" kind="subtitles" srclang="en" src="./files/movie.webvtt" default>
+</video>
+</br>
+Preload : None
+</br>
+<video preload="none" src="./files/movie.mp4" controls autostart>
+   <track label="English" kind="subtitles" srclang="en" src="./files/movie.webvtt" default>
+</video>
+</body>
+</html>
