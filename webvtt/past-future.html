@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<title>:past and :future</title>
+<style>
+::cue(:past) {
+	color:blue;
+}
+::cue(i:past) {
+	color:red;
+}
+::cue(:future) {
+	color:grey;
+}
+</style>
+<video autoplay controls loop src="./files/movie.mp4">
+    <track src="./files/past-future.vtt" default>
+</video>
+</html>
