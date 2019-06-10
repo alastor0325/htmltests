@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<title>the reference file for different-base-direction and align:start</title>
+<style>
+.video {
+    display: absolute;
+    width: 320px;
+    height: 240px;
+    position: absolute;
+}
+.cue {
+    position: absolute;
+    unicode-bidi: plaintext;
+    overflow-wrap: break-word;
+    writing-mode: horizontal-tb;
+    text-align: start;
+    background-color: blue;
+    top: 68.5%;
+    left: 50%;
+    width: 50%;
+    height: auto;
+}
+.cueText {
+    font-family: sans-serif;
+    white-space: pre-line;
+    background: rgba(0,0,0,0.8);
+    color: rgba(255, 255, 255, 1);
+    font-size: 12px;
+    display: inline;
+}
+</style>
+<div class="video">
+    <video autoplay controls loop src="./files/movie.mp4"></video>
+    <div class="cue">
+        <span class="cueText">Hello!
+שלום!</span>
+    </div>
+</div>
+</html>
