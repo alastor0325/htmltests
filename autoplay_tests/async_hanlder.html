@@ -1,0 +1,27 @@
+<html>
+<head>
+  <title>call play in async handler</title>
+</head>
+<body>
+call play in async handler
+</br>
+</br>
+<video id="v" src="../files/bunny.mp4" controls preload="auto"></video>
+<br>
+<br>
+<button onclick="playInAsync()">click to play in async handler</button>
+<button onclick="playInSync()">click to play in sync handler</button>
+<script type="text/javascript">
+function playInAsync() {
+  const video = document.getElementById("v");
+  setTimeout(() => {
+    video.play();
+  }, 0);
+}
+function playInSync() {
+  const video = document.getElementById("v");
+  video.play();
+}
+</script>
+</body>
+</html>
