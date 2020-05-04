@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title></title>
+</head>
+<body>
+<video id="v" src="../files/bunny.mp4" autoplay controls preload="auto"></video>
+<h1><p id="text">Media Session hasn't got any action</p></h1>
+<script type="text/javascript">
+
+navigator.mediaSession.setActionHandler("play", function() {
+	document.getElementById("text").innerHTML = "Got 'play', play video";
+	document.getElementById("v").play();
+});
+
+navigator.mediaSession.setActionHandler("pause", function() {
+	document.getElementById("text").innerHTML = "Got 'pause', pause video";
+	document.getElementById("v").pause();
+});
+
+navigator.mediaSession.setActionHandler("previoustrack", function() {
+	document.getElementById("text").innerHTML = "Got 'previoustrack'";
+});
+
+navigator.mediaSession.setActionHandler("nexttrack", function() {
+	document.getElementById("text").innerHTML = "Got 'nexttrack'";
+});
+
+navigator.mediaSession.setActionHandler("stop", function() {
+	document.getElementById("text").innerHTML = "Got 'stop'";
+	document.getElementById("v").pause();
+});
+
+</script>
+</body>
+</html>
