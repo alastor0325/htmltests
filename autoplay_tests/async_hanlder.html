@@ -3,14 +3,14 @@
   <title>call play in async handler</title>
 </head>
 <body>
-call play in async handler
+pressing `call play in async` handler can't start media, but pressing `call play in sync` can.
+<button onclick="playInAsync()">call play in async</button>
+<button onclick="playInSync()">call play in sync</button>
 </br>
 </br>
 <video id="v" src="../files/bunny.mp4" controls preload="auto"></video>
 <br>
 <br>
-<button onclick="playInAsync()">click to play in async handler</button>
-<button onclick="playInSync()">click to play in sync handler</button>
 <script type="text/javascript">
 function playInAsync() {
   const video = document.getElementById("v");
