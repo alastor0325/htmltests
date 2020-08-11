@@ -1,0 +1,22 @@
+<html>
+<head>
+    <meta charset="utf-8">
+    <script>
+        function make()
+        {
+            var myVideo = document.getElementById("myVideo");
+            var AudioContext = window.AudioContext || window.webkitAudioContext;
+            var audioCtx = new AudioContext();
+            var source = audioCtx.createMediaElementSource(myVideo);
+            source.connect(audioCtx.destination);
+        }
+    </script>
+</head>
+<body>
+    <button onclick="make()">Test</button>
+    <br/>
+    <video id="myVideo" controls width="1280" height="720" autoplay loop>
+        <source src="bunny.mp4" type="video/webm"/>
+    </video>
+</body>
+</html>
