@@ -1,0 +1,45 @@
+<html>
+<audio id="testAudio" controls></audio>
+<script>
+  const audio = document.getElementById("testAudio");
+  audio.onerror = _ => {
+    alert("should not get any error!");
+  }
+  const mimeCodec = 'audio/mp4;codecs=" mp4a.40.2"';
+  const mediaSource = new MediaSource();
+
+  if (MediaSource.isTypeSupported(mimeCodec)) {
+    audio.src = URL.createObjectURL(mediaSource);
+    mediaSource.addEventListener('sourceopen', sourceOpen);
+  } else {
+    console.error('Unsupported MIME type or codec: ', mimeCodec);
+  }
+
+  async function sourceOpen() {
+    console.log(this.readyState);
+    var sb = mediaSource.addSourceBuffer(mimeCodec);
+    await new Promise(r => mediaSource.sourceBuffers.onaddsourcebuffer = r);
+    console.log(`added source buffer`);
+
+    const buffer = await new Uint8Array(await fetchWithXHR("test-audio.mp4"));
+    sb.appendBuffer(buffer);
+    console.log(`appended data`);
+    audio.currentTime = 22.05;
+  };
+
+  async function fetchWithXHR(url) {
+    return new Promise(resolve => {
+      console.log(`fetching data from ${url}`)
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", url, true);
+      xhr.responseType = "arraybuffer";
+      xhr.addEventListener("load", function() {
+        console.log(`got response`);
+        resolve(xhr.response);
+      });
+      xhr.send();
+    }
+  );
+}
+</script>
+</html>
