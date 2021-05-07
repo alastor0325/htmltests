@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+<h1>With Web Audio API</h1>
+<audio src="./test.wav" controls id="media"></audio>
+<button id='btn' disabled>Play</button>
+
+<h1>Without Web Audio API</h1>
+<audio src="./test.wav" controls id='media1'></audio>
+<button id='btn1' disabled>Play</button>
+<script>
+media.addEventListener('canplaythrough', () => {
+    if (media.readyState === media.HAVE_ENOUGH_DATA) {
+        btn.disabled = false
+        btn.onclick = () => {
+            const ctx = new AudioContext
+
+            const source = ctx.createMediaElementSource(media)
+            source.connect(ctx.destination)
+
+            media.play().then(() => {
+                media.playbackRate = 2
+            })
+
+            media.controls = true
+            btn.disabled = true
+        }
+    }
+})
+
+media1.addEventListener('canplaythrough', () => {
+    if (media1.readyState === media.HAVE_ENOUGH_DATA) {
+        btn1.disabled = false
+        btn1.onclick = () => {
+            media1.play().then(() => {
+                media1.playbackRate = 2
+            })
+
+            media1.controls = true
+            btn1.disabled = true
+        }
+    }
+})
+</script>
+
+</body>
+
+</html>
