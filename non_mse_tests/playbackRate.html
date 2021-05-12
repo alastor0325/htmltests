@@ -11,19 +11,49 @@
 <h1>With Web Audio API</h1>
 <audio src="./test.wav" controls id="media"></audio>
 <button id='btn' disabled>Play</button>
+</br>
+<button id="block100">Lock thread for 100ms</button>
+<button id="block1000">Lock thread for 1000ms</button>
 
 <h1>Without Web Audio API</h1>
 <audio src="./test.wav" controls id='media1'></audio>
 <button id='btn1' disabled>Play</button>
+
+<script type="worklet">
+registerProcessor('test', class param extends AudioWorkletProcessor {
+    constructor() {
+    super()
+    this.port.onmessage = (e) => {
+        var start = Date.now();
+        console.log(Date.now());
+        console.log(e.data)
+        while((Date.now() - start) < parseInt(e.data)) {
+        console.log(Date.now() - start);
+        }
+    }
+    }
+    process(input, output, parameters) {
+    return true;
+    }
+});
+</script>
+
 <script>
+var nodec = null;
+
 media.addEventListener('canplaythrough', () => {
     if (media.readyState === media.HAVE_ENOUGH_DATA) {
         btn.disabled = false
         btn.onclick = () => {
-            const ctx = new AudioContext
+            var ac = new AudioContext
 
-            const source = ctx.createMediaElementSource(media)
-            source.connect(ctx.destination)
+            var e = document.querySelector("script[type=worklet]")
+            var text = e.innerText;
+            const blob = new Blob([text], {type: "application/javascript"});
+            var url = URL.createObjectURL(blob);
+
+            const source = ac.createMediaElementSource(media)
+            source.connect(ac.destination)
 
             media.play().then(() => {
                 media.playbackRate = 2
@@ -31,6 +61,14 @@ media.addEventListener('canplaythrough', () => {
 
             media.controls = true
             btn.disabled = true
+
+            ac.audioWorklet.addModule(url).then(() => {
+                nodec = new AudioWorkletNode(ac, 'test', {});
+                nodec.connect(ac.destination);
+                nodec.onprocessorerror = function(e) {
+                console.log("error: ", e);
+                }
+            });
         }
     }
 })
@@ -48,8 +86,25 @@ media1.addEventListener('canplaythrough', () => {
         }
     }
 })
+
+async function seekToNextFrames() {
+    const media = document.getElementById("media");
+    for (let i = 0; i < 23; i++) {
+        await media.seekToNextFrame();
+    }
+}
+
+document.getElementById("block100").onclick = async _ => {
+  console.log("block 100");
+  nodec?.port.postMessage(100);
+  await seekToNextFrames();
+}
+document.getElementById("block1000").onclick = async _ => {
+  console.log("block 1000");
+  nodec?.port.postMessage(1000);
+  await seekToNextFrames();
+}
+
 </script>
-
 </body>
-
 </html>
