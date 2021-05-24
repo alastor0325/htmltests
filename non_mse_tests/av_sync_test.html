@@ -1,0 +1,89 @@
+<html>
+<h2>Press `Start` button to start playing audio for a short while, <br>
+then capture its stream and print the audible frame via Canvas API.</h2>
+<button type="button" onclick="playAndCapture()">Start</button></br>
+<video id="video" controls src="av_sync_test.mp4" width="640" height="480"></video>
+<!-- <canvas id="canvas" width="640" height="480"></canvas> -->
+<h2>Paint all audible frames below (latest on the top)</h2><br/>
+<div id="result"></div>
+<script>
+function createAudioWaveAnalyser(source) {
+  window.ac = new AudioContext();
+  window.analyser = ac.createAnalyser();
+  analyser.frequencyBuf = new Float32Array(analyser.frequencyBinCount);
+  analyser.smoothingTimeConstant = 0;
+  analyser.fftSize = 2048; // 1024 bins
+
+  let sourceNode = ac.createMediaElementSource(source);
+  sourceNode.connect(analyser);
+  analyser.connect(ac.destination);
+  analyser.timeDomainBuf = new Float32Array(analyser.frequencyBinCount);
+  // window.cvs = document.querySelector("canvas");
+  window.cvs = document.createElement('canvas');
+  cvs.width  = 640;
+  cvs.height = 480;
+  analyser.c = cvs.getContext("2d");
+  analyser.w = cvs.width;
+  analyser.h = cvs.height;
+
+  analyser.notifyAnalysis = () => {
+    let {frequencyBuf} = analyser;
+    analyser.getFloatFrequencyData(frequencyBuf);
+
+    let isSilence = true;
+    for (let data of frequencyBuf) {
+      if (data !== -Infinity) {
+        isSilence = false;
+        break;
+      }
+    }
+    if (isSilence) {
+      console.log("no need to paint the silent frame");
+      isCaptured = false;
+      requestAnimationFrame(analyser.notifyAnalysis);
+      return;
+    }
+    if (isCaptured) {
+      console.log("painted non-silent frame already");
+      requestAnimationFrame(analyser.notifyAnalysis);
+      return;
+    }
+    console.log("draw non-silent frame");
+    window.isCaptured = true;
+    let context = cvs.getContext('2d');
+    context.drawImage(video, 0, 0, 640, 480);
+    let dataURL = cvs.toDataURL();
+    console.log(dataURL);
+
+    let img = document.createElement('img');
+    img.setAttribute('src', dataURL);
+    document.getElementById("result").prepend(img);
+    let timestamp = document.createElement("p");
+    timestamp.innerText = Date.now();
+    document.getElementById("result").prepend(timestamp);
+
+    requestAnimationFrame(analyser.notifyAnalysis);
+  }
+
+  analyser.notifyAnalysis();
+}
+
+async function playAndCapture() {
+  const video = document.getElementById("video");
+  await video.play();
+  // Wait for a while in order to play audio from AudioSink, and then switch to
+  // DecodedStream later.
+  for (let idx = 0; idx < 5; idx++) {
+    await new Promise(r => video.ontimeupdate = r);
+  }
+  createAudioWaveAnalyser(video);
+  video.onpause = () => {
+    ac.suspend();
+  };
+  video.onplay = () => {
+    ac.resume();
+  }
+}
+
+</script>
+</html>
