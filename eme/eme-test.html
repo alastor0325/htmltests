@@ -1,0 +1,47 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Test PlayReady DRM support</title>
+</head>
+<body>
+<script>
+
+function EMETest() {
+  var configs = [{
+    initDataTypes: ['keyids', 'cenc'],
+    audioCapabilities: [{ contentType: `audio/mp4;codecs="mp4a.40.2"` }],
+    videoCapabilities: [{ contentType: `video/mp4;codecs="avc1.640028"` }],
+    sessionTypes : ["persistent-license"],
+  }];
+
+  navigator.requestMediaKeySystemAccess('com.microsoft.playready.recommendation', configs)
+    .then(
+      (access) => {
+        console.log('creating media key');
+        access.createMediaKeys()
+          .then(
+            (mediaKeys) => {
+              console.log('creating media session');
+              var session = mediaKeys.createSession('persistent-license');
+              session.addEventListener('message', event => {
+                console.log(`MediaKeyMessage type is '${event.messageType}'`);
+                session.close().then(() => { console.log(`closed session`); });
+              });
+              // From https://learn.microsoft.com/en-us/playready/overview/key-and-key-ids-kids
+              var kids = '{"kids":["0IbHou/5s0yzM80yOkKEpQ==", "/qgG2xbs4k2SKCxx6bhWqw=="]}';
+              return session.generateRequest('keyids', new TextEncoder().encode(kids));
+            },
+            _ => {
+              console.log(`failed to create media key`);
+            });
+      },
+      _ => {
+        console.log(`failed to request key system access}`);
+      });
+}
+
+window.onload = EMETest;
+
+</script>
+</body>
+</html>
