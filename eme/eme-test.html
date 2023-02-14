@@ -4,13 +4,33 @@
   <title>Test PlayReady DRM support</title>
 </head>
 <body>
+<form>
+  <label for="framework">Select Kids</label>
+  <select id="KeyIdSelection" aria-label="State">
+    <option value="1">KIDS_3_H264</option>
+    <option value="2">KIDS_4_VP9</option>
+    <option value="3">KIDS_AV1</option>
+  </select>
+  <button id="btn" onclick="EMETest()">Select Kids</button>
+</form>
 <script>
 
-function stringToUInt8Array(str) {
-   var array = new Uint8Array(str.length);
-   for (var i=0; i<str.length; i++)
-		array[i] = str.charCodeAt(i);
-   return array;
+const KIDS = {
+  // https://testweb.playready.microsoft.com/Content/Content3X
+  "KIDS_3_H264" : '{"kids":["a2c786d0f9ef4cb3b333cd323a4284a5"]}',
+  // https://testweb.playready.microsoft.com/Content/Content4X
+  "KIDS_4_VP9"  : '{"kids":["0000000003fceacd0000000000000000"]}',
+  // https://testweb.playready.microsoft.com/Content/ContentAV1
+  "KIDS_AV1"    : '{"kids":["0000000003fceacd0000000000000000"]}',
+}
+
+function getKidsFromSelect() {
+  const sb = document.querySelector('#KeyIdSelection');
+  const selectedValues = [].filter
+    .call(sb.options, option => option.selected)
+    .map(option => option.text);
+  console.log(selectedValues + ":" + KIDS[selectedValues]);
+  return KIDS[selectedValues];
 }
 
 function EMETest() {
@@ -34,8 +54,9 @@ function EMETest() {
                 console.log(`MediaKeyMessage type is '${event.messageType}'`);
                 session.close().then(() => { console.log(`closed session`); });
               });
-              let kids = '{"kids":["AAAAEAAQABAQABAAAAAAAQ"]}';
-              return session.generateRequest('keyids', new TextEncoder().encode(kids));
+              return session.generateRequest(
+                'keyids',
+                new TextEncoder().encode(getKidsFromSelect()));
             },
             _ => {
               console.log(`failed to create media key`);
