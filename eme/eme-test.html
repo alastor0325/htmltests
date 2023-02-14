@@ -6,6 +6,13 @@
 <body>
 <script>
 
+function stringToUInt8Array(str) {
+   var array = new Uint8Array(str.length);
+   for (var i=0; i<str.length; i++)
+		array[i] = str.charCodeAt(i);
+   return array;
+}
+
 function EMETest() {
   var configs = [{
     initDataTypes: ['keyids', 'cenc'],
@@ -27,8 +34,7 @@ function EMETest() {
                 console.log(`MediaKeyMessage type is '${event.messageType}'`);
                 session.close().then(() => { console.log(`closed session`); });
               });
-              // From https://learn.microsoft.com/en-us/playready/overview/key-and-key-ids-kids
-              var kids = '{"kids":["0IbHou/5s0yzM80yOkKEpQ==", "/qgG2xbs4k2SKCxx6bhWqw=="]}';
+              let kids = '{"kids":["AAAAEAAQABAQABAAAAAAAQ"]}';
               return session.generateRequest('keyids', new TextEncoder().encode(kids));
             },
             _ => {
