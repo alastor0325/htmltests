@@ -5,14 +5,42 @@
 </head>
 <body>
 <h1>Open devtool to observe the result</h1>
-<label for="framework">Select Kids</label>
-<select id="KeyIdSelection">
-  <option value="1">KIDS_3_H264</option>
-  <option value="2">KIDS_3_HEVC</option>
-  <option value="3">KIDS_4_VP9</option>
-  <option value="4">KIDS_4_H264</option>
-</select>
-<button id="btn" onclick="EMETest()">Select Kids</button>
+
+<div>
+  <label>Select Key System :</label>
+  <select id="KeySystemConfig">
+    <option value="1">com.microsoft.playready.recommendation</option>
+    <option value="2">com.microsoft.playready</option>
+    <option value="3">com.microsoft.playready.hardware</option>
+  </select>
+</div>
+<div>
+  <label>Select Kids :</label>
+  <select id="KeyIdSelection">
+    <option value="1">KIDS_3_H264</option>
+    <option value="2">KIDS_3_HEVC</option>
+    <option value="3">KIDS_4_VP9</option>
+    <option value="4">KIDS_4_H264</option>
+  </select>
+</div>
+<div>
+  <label>Init data :</label>
+  KeyIds<input type="checkbox" name="initDataTypes" value="keyids" checked>
+  Cenc<input type="checkbox" name="initDataTypes" value="cenc" checked>
+</div>
+<div>
+  <label>Session types for config:</label>
+  Temporary<input type="checkbox" name="sessionTypes" value="temporary" checked>
+  Persistent-license<input type="checkbox" name="sessionTypes" value="persistent-license" checked>
+</div>
+<div>
+  <label>Session types for key session:</label>
+  <select id="KeySessionTypeSelection">
+    <option value="1">temporary</option>
+    <option value="2">persistent-license</option>
+  </select>
+</div>
+<button id="btn" onclick="EMETest()">Run Request</button>
 <script>
 
 const KIDS = {
@@ -24,39 +52,55 @@ const KIDS = {
   "KIDS_4_H264"  : '{"kids":["10000000100010001000100000000001"]}',
 }
 
-function getKidsFromSelect() {
-  const sb = document.querySelector('#KeyIdSelection');
+function getValueFromSelectTable(selectId) {
+  const st = document.querySelector(`#${selectId}`);
   const selectedValues = [].filter
-    .call(sb.options, option => option.selected)
+    .call(st.options, option => option.selected)
     .map(option => option.text);
-  console.log(selectedValues + ":" + KIDS[selectedValues]);
+  if (selectId == "KeySystemConfig" || selectId == "KeySessionTypeSelection") {
+    return selectedValues;
+  }
   return KIDS[selectedValues];
+}
+
+function getValueFromCheckBoxes(name) {
+  let rv = [];
+  let checkboxes = document.getElementsByName(name);
+  for (let checkbox of checkboxes) {
+    if (checkbox.checked) {
+      rv.push(checkbox.value);
+    }
+  }
+  return rv;
 }
 
 function EMETest() {
   var configs = [{
-    initDataTypes: ['keyids', 'cenc'],
+    initDataTypes: getValueFromCheckBoxes("initDataTypes"),
     audioCapabilities: [{ contentType: `audio/mp4;codecs="mp4a.40.2"` }],
     videoCapabilities: [{ contentType: `video/mp4;codecs="avc1.640028"` }],
-    sessionTypes : ["persistent-license"],
+    sessionTypes : getValueFromCheckBoxes("sessionTypes"),
   }];
-
-  navigator.requestMediaKeySystemAccess('com.microsoft.playready.recommendation', configs)
+  const keySystem = getValueFromSelectTable("KeySystemConfig");
+  console.log(`Call requestMediaKeySystemAccess on '${keySystem}'`);
+  console.log(`-- with ${JSON.stringify(configs)}`);
+  navigator.requestMediaKeySystemAccess(keySystem, configs)
     .then(
       (access) => {
         console.log('creating media key');
         access.createMediaKeys()
           .then(
             (mediaKeys) => {
-              console.log('creating media session');
-              var session = mediaKeys.createSession('persistent-license');
+              const sessionType = getValueFromSelectTable("KeySessionTypeSelection");
+              console.log(`creating a '${sessionType}' media key session`);
+              var session = mediaKeys.createSession(sessionType);
               session.addEventListener('message', event => {
                 console.log(`MediaKeyMessage type is '${event.messageType}'`);
-                session.close().then(() => { console.log(`closed session`); });
+                session.close().then(() => { console.log(`closed media key session`); });
               });
               return session.generateRequest(
                 'keyids',
-                new TextEncoder().encode(getKidsFromSelect()));
+                new TextEncoder().encode(getValueFromSelectTable("KeyIdSelection")));
             },
             _ => {
               console.log(`failed to create media key`);
