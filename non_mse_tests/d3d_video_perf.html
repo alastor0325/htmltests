@@ -1,0 +1,118 @@
+<html>
+  <body>
+    <h1>Firefox Window Hardware Decoder Performance Regression Test</h1>
+    <p>
+      On certain combination of the graphic card and the driver version, the
+      performance of Windows hardware decoding would get slower gradually. The
+      more video Firefox performs in hardware decoding, the worse the hardware
+      decoding performance would be. This issue is tracked by
+      <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1890622"
+        >bug 1890622</a
+      >.
+    </p>
+    <p>
+      This test will reset the same URL on the targeted media element, and
+      measure how long does it take to receive `loadeddata` event that indicates
+      that the first video frame is loaded. Click the button below will repeat
+      300 times on the above behavior, which would affect the performace of the
+      hardware decoding.
+    </p>
+    <p>
+      If you want to see the detailed time of decoding every single frame,
+      follow the
+      <a href="https://bugzilla.mozilla.org/show_bug.cgi?id=1890622#c0"
+        >step2 to step4</a
+      >
+      to use Firefox Profiler to check the markers.
+    </p>
+    <video id="v" src="out.webm" controls loop></video><br /><br />
+    <button onclick="testPerf()">Add 300 iterations</button>
+    <div id="result"></div>
+    <script>
+      class Point {
+        constructor(x, y) {
+          this.x = x;
+          this.y = y;
+        }
+      }
+
+      var results = [];
+
+      function calculateSlopeLeastSquares(points) {
+        // Calculate the mean of x and y values
+        const n = points.length;
+        let sumX = 0;
+        let sumY = 0;
+        for (let i = 0; i < n; i++) {
+          sumX += points[i].x; // x value
+          sumY += points[i].y; // y value
+        }
+        const meanX = sumX / n;
+        const meanY = sumY / n;
+
+        // Calculate the slope (m) using the least squares fitting formula
+        let numerator = 0;
+        let denominator = 0;
+        for (let i = 0; i < n; i++) {
+          numerator += (points[i].x - meanX) * (points[i].y - meanY);
+          denominator += Math.pow(points[i].x - meanX, 2);
+        }
+        const slope = numerator / denominator;
+
+        return slope;
+      }
+
+      function correlationCoefficient(points) {
+        const n = points.length;
+        let sumX = 0;
+        let sumY = 0;
+        let sumXY = 0;
+        let sumX2 = 0;
+        let sumY2 = 0;
+        for (const point of points) {
+          sumX += point.x;
+          sumY += point.y;
+          sumXY += point.x * point.y;
+          sumX2 += point.x * point.x;
+          sumY2 += point.y * point.y;
+        }
+        const numerator = n * sumXY - sumX * sumY;
+        const denominator = Math.sqrt(
+          (n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY)
+        );
+        const correlation = numerator / denominator;
+        return correlation;
+      }
+
+      async function testPerf() {
+        const video = document.getElementById("v");
+        const startIdx = results.length;
+        for (let idx = startIdx; idx < startIdx + 300; idx++) {
+          const start = Date.now();
+          video.src = "";
+          video.src = "out.webm";
+          await new Promise((r) => (video.onloadeddata = r));
+          const passedTime = Date.now() - start;
+          console.log(`Iteration ${idx} : took ${passedTime}`);
+          results.push(new Point(idx, passedTime));
+        }
+
+        // Get the result div
+        const resultDiv = document.getElementById("result");
+        const iterDiv = document.createElement("div");
+        resultDiv.appendChild(iterDiv);
+
+        // Create new text elements to display the results
+        const slopeText = document.createElement("p");
+        const slope = calculateSlopeLeastSquares(results);
+        slopeText.textContent = `After ${results.length} iterations, Slope of linear square fitting: ${slope}`;
+        iterDiv.appendChild(slopeText);
+
+        const correlationText = document.createElement("p");
+        const correlation = correlationCoefficient(results);
+        correlationText.textContent = `After ${results.length} iterations,  Correlation Coefficient: ${correlation}`;
+        iterDiv.appendChild(correlationText);
+      }
+    </script>
+  </body>
+</html>
