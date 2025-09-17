@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>MSE & canPlayType Support Matrix</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --fg: #111;
+        --muted: #666;
+        --bg: #fff;
+        --line: #e5e7eb;
+        --good: #16a34a;
+        --bad: #dc2626;
+        --maybe: #d97706;
+      }
+      body {
+        font-family: system-ui, -apple-system, Segoe UI, Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        margin: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+      }
+      .hint {
+        color: var(--muted);
+        margin-bottom: 20px;
+      }
+      button {
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fafafa;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 12px 0 20px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 16px 0 28px;
+      }
+      th,
+      td {
+        border: 1px solid var(--line);
+        padding: 8px 10px;
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        background: #f8fafc;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas,
+          "Liberation Mono", monospace;
+      }
+      .ok {
+        color: var(--good);
+        font-weight: 700;
+      }
+      .no {
+        color: var(--bad);
+        font-weight: 700;
+      }
+      .maybe {
+        color: var(--maybe);
+        font-weight: 700;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .section-title {
+        margin: 24px 0 8px;
+      }
+      .legend {
+        font-size: 0.95em;
+        color: var(--muted);
+      }
+      details {
+        margin: 8px 0 16px;
+      }
+      .small {
+        font-size: 0.95em;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>MSE & canPlayType Support Matrix</h1>
+    <div class="hint">
+      Generates container/codecs combinations and probes:
+      <code>MediaSource.isTypeSupported()</code> and
+      <code>&lt;video|audio&gt;.canPlayType()</code>. No media is fetched or
+      played — this only checks capability strings.
+    </div>
+
+    <div class="controls">
+      <button id="runBtn">Run tests</button>
+      <button id="exportBtn" disabled>Export JSON</button>
+      <span id="env" class="small"></span>
+    </div>
+
+    <div class="legend">
+      Legend: <span class="ok">supported</span>,
+      <span class="no">not supported</span>, <span class="maybe">maybe</span>
+    </div>
+
+    <h2 class="section-title">
+      MSE: <code>MediaSource.isTypeSupported(type)</code>
+    </h2>
+    <table id="mseTable" aria-label="MSE support table">
+      <thead>
+        <tr>
+          <th style="width: 55%">type</th>
+          <th>result</th>
+          <th>notes</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <h2 class="section-title">HTML Media: <code>canPlayType(type)</code></h2>
+    <table id="cptTable" aria-label="canPlayType support table">
+      <thead>
+        <tr>
+          <th style="width: 55%">type</th>
+          <th>element</th>
+          <th>result</th>
+          <th>notes</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <details>
+      <summary>What we test (containers & codecs)</summary>
+      <div class="mono small">
+        Video containers: <code>video/mp4</code>, <code>video/webm</code>,
+        <code>video/matroska</code>, <code>video/x-matroska</code><br />
+        Video codecs: <code>avc</code>, <code>hevc</code>, <code>av1</code>,
+        <code>vp8</code>, <code>vp9</code><br /><br />
+        Audio containers: <code>audio/mp4</code>, <code>audio/webm</code>,
+        <code>audio/matroska</code>, <code>audio/x-matroska</code><br />
+        Audio codecs: <code>aac</code>, <code>opus</code>, <code>vorbis</code
+        ><br /><br />
+        Also tests each container without <code>codecs=</code>.
+      </div>
+    </details>
+
+    <script>
+      const $ = (s) => document.querySelector(s);
+      const mseBody = $("#mseTable tbody");
+      const cptBody = $("#cptTable tbody");
+      const runBtn = $("#runBtn");
+      const exportBtn = $("#exportBtn");
+      const env = $("#env");
+
+      const hasMSE = typeof window.MediaSource !== "undefined";
+      env.textContent = `UA: ${navigator.userAgent} • MSE: ${
+        hasMSE ? "yes" : "no"
+      }`;
+
+      // 1) Inputs
+      const VIDEO_CONTAINERS = [
+        "video/mp4",
+        "video/webm",
+        "video/matroska",
+        "video/x-matroska",
+      ];
+      const VIDEO_CODECS = ["avc", "hevc", "av1", "vp8", "vp9"];
+
+      const AUDIO_CONTAINERS = [
+        "audio/mp4",
+        "audio/webm",
+        "audio/matroska",
+        "audio/x-matroska",
+      ];
+      const AUDIO_CODECS = ["aac", "opus", "vorbis", "flac", "mp3", "pcm"];
+
+      // 2) Map "simple" codec names to detailed codec strings per container
+      function mapCodec(container, simple, kind /* 'video' | 'audio' */) {
+        const c = container.toLowerCase();
+        const isMP4 = c.endsWith("/mp4");
+        const isWebM = c.includes("webm");
+        const isMKV = c.includes("matroska");
+
+        if (kind === "video") {
+          if (isMP4) {
+            switch (simple) {
+              case "avc":
+                return "avc1.42E01E"; // H.264 Baseline L3.0
+              case "hevc":
+                return "hvc1.1.6.L93.B0"; // HEVC Main
+              case "av1":
+                return "av01.0.05M.08"; // AV1 Main 8-bit
+              case "vp9":
+                return "vp09.00.10.08"; // VP9 Profile0 8-bit
+              case "vp8":
+                return "vp8"; // VP8 (rare in MP4; probe anyway)
+            }
+          } else if (isWebM) {
+            switch (simple) {
+              case "avc":
+                return "avc1"; // not standard in WebM; still probe
+              case "hevc":
+                return "hvc1"; // not standard in WebM; still probe
+              case "av1":
+                return "av01.0.05M.08";
+              case "vp9":
+                return "vp09.00.10.08";
+              case "vp8":
+                return "vp8";
+            }
+          } else if (isMKV) {
+            switch (simple) {
+              case "avc":
+                return "avc1.42E01E";
+              case "hevc":
+                return "hvc1.1.6.L93.B0";
+              case "av1":
+                return "av1";
+              case "vp9":
+                return "vp9";
+              case "vp8":
+                return "vp8";
+            }
+          }
+        } else {
+          // audio
+          if (isMP4) {
+            switch (simple) {
+              case "aac":
+                return "mp4a.40.2"; // AAC-LC
+              case "opus":
+                return "opus"; // Opus in MP4 is non-universal; probe result
+              case "vorbis":
+                return "vorbis"; // Vorbis-in-MP4 is non-standard; probe result
+              case "flac":
+                return "flac";
+              case "mp3":
+                return "mp3";
+              case "pcm":
+                return "pcm";
+            }
+          } else if (isWebM || isMKV) {
+            switch (simple) {
+              case "aac":
+                return "mp4a.40.2"; // AAC in WebM/MKV is non-standard; probe result
+              case "opus":
+                return "opus";
+              case "vorbis":
+                return "vorbis";
+              case "flac":
+                return "flac";
+              case "mp3":
+                return "mp3";
+              case "pcm":
+                return "pcm";
+            }
+          }
+        }
+        return null;
+      }
+
+      // 3) Build type strings: container only + every codec variant
+      function buildTypes(containers, codecs, kind) {
+        const out = [];
+        for (const container of containers) {
+          out.push({
+            type: container,
+            container,
+            codec: null,
+            kind,
+            note: "no codecs param",
+          });
+          for (const simple of codecs) {
+            const mapped = mapCodec(container, simple, kind);
+            // Always attempt; if mapped is falsy, we still produce a minimal simple codec string
+            const codecToken = mapped || simple;
+            out.push({
+              type: `${container}; codecs="${codecToken}"`,
+              container,
+              codec: simple,
+              kind,
+              note: mapped ? `${simple} → ${mapped}` : `${simple} (generic)`,
+            });
+          }
+        }
+        return out;
+      }
+
+      // 4) Probing helpers
+      function probeMSE(type) {
+        if (!hasMSE || !MediaSource.isTypeSupported)
+          return { supported: false, unavailable: !hasMSE };
+        let ok = false,
+          err = null;
+        try {
+          ok = MediaSource.isTypeSupported(type);
+        } catch (e) {
+          err = String(e);
+        }
+        return { supported: !!ok, error: err };
+      }
+
+      function probeCPT(type, kind) {
+        const el = document.createElement(kind === "video" ? "video" : "audio");
+        const r = el.canPlayType(type); // "", "maybe", "probably"
+        return r;
+      }
+
+      // 5) Rendering
+      function td(text, cls) {
+        const d = document.createElement("td");
+        if (cls) d.className = cls;
+        d.textContent = text;
+        return d;
+      }
+
+      function addRow(tbody, cells) {
+        const tr = document.createElement("tr");
+        for (const c of cells) tr.appendChild(c);
+        tbody.appendChild(tr);
+      }
+
+      // 6) Main
+      let results = { mse: [], canPlayType: [] };
+
+      runBtn.addEventListener("click", () => {
+        // reset
+        mseBody.innerHTML = "";
+        cptBody.innerHTML = "";
+        results = { mse: [], canPlayType: [] };
+
+        const videoTypes = buildTypes(VIDEO_CONTAINERS, VIDEO_CODECS, "video");
+        const audioTypes = buildTypes(AUDIO_CONTAINERS, AUDIO_CODECS, "audio");
+        const all = [...videoTypes, ...audioTypes];
+
+        // MSE table
+        for (const entry of all) {
+          const r = probeMSE(entry.type);
+          const status = r.unavailable
+            ? "MSE unavailable"
+            : r.supported
+            ? "supported"
+            : "not supported";
+          results.mse.push({
+            type: entry.type,
+            kind: entry.kind,
+            supported: !!r.supported,
+            note: entry.note || null,
+            error: r.error || null,
+          });
+
+          addRow(mseBody, [
+            td(entry.type, "mono"),
+            td(status, r.unavailable ? "" : r.supported ? "ok" : "no"),
+            td(entry.note || r.error || "", "small"),
+          ]);
+        }
+
+        // canPlayType table
+        for (const entry of all) {
+          const r = probeCPT(entry.type, entry.kind);
+          const cls = r === "probably" ? "ok" : r === "maybe" ? "maybe" : "no";
+          results.canPlayType.push({
+            type: entry.type,
+            kind: entry.kind,
+            result: r,
+            note: entry.note || null,
+          });
+
+          addRow(cptBody, [
+            td(entry.type, "mono"),
+            td(entry.kind),
+            td(r || "(empty string)", cls),
+            td(entry.note || "", "small"),
+          ]);
+        }
+
+        exportBtn.disabled = false;
+      });
+
+      exportBtn.addEventListener("click", async () => {
+        const blob = new Blob([JSON.stringify(results, null, 2)], {
+          type: "application/json",
+        });
+        try {
+          await navigator.clipboard.writeText(await blob.text());
+          exportBtn.textContent = "Copied JSON to clipboard ✓";
+          setTimeout(() => (exportBtn.textContent = "Export JSON"), 1500);
+        } catch {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "mse-canplaytype-results.json";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+        }
+      });
+    </script>
+  </body>
+</html>
