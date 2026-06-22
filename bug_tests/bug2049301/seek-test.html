@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Seek latency harness — Bug 2049301</title>
+<style>
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 860px; }
+  h1 { font-size: 18px; }
+  video { background: #111; width: 480px; height: 270px; }
+  button { font-size: 15px; padding: 8px 18px; margin: 12px 0; }
+  table { border-collapse: collapse; margin-top: 16px; }
+  th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: right; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  caption { font-weight: bold; text-align: left; margin: 14px 0 6px; }
+  #status { color: #555; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Seek-to-first-frame latency — Bug 2049301</h1>
+<p>Measures <code>video.currentTime = target</code> seek latency for a buffered
+±10&nbsp;s seek, on a direct progressive MP4 and on an MSE-appended fragmented
+MP4. Open this page in <b>Firefox</b> and in <b>Chrome</b> and compare. Primary
+metric is the <code>seeked</code> event; <code>firstFrame</code> is the
+<code>requestVideoFrameCallback</code> time (best-effort).</p>
+
+<video id="v" muted playsinline></video>
+<div>
+  <label>iterations <input id="iters" type="number" value="15" min="3" style="width:4em"></label>
+  <button id="run">Run measurement</button>
+</div>
+<p id="status">idle</p>
+<div id="tables"></div>
+<details><summary>raw JSON</summary><pre id="out"></pre></details>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const setStatus = (s) => { $('status').textContent = s; };
+
+function median(arr) {
+  const s = arr.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
+  if (!s.length) return null;
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+// Primary metric: the `seeked` event (decode reached the target frame). Does not
+// require compositor presentation. firstFrame via requestVideoFrameCallback is
+// best-effort, captured within a short grace window after `seeked`.
+function measureOne(v, target) {
+  return new Promise((resolve) => {
+    const res = { firstFrame: null, seeked: null, waiting: null, actual: null };
+    let done = false;
+    const t0 = performance.now();
+    const finish = () => { if (!done) { done = true; v.removeEventListener('waiting', onWaiting); resolve(res); } };
+    const onWaiting = () => { if (res.waiting === null) res.waiting = performance.now() - t0; };
+    v.addEventListener('waiting', onWaiting, { once: true });
+    v.addEventListener('seeked', () => {
+      res.seeked = performance.now() - t0;
+      res.actual = v.currentTime;
+      setTimeout(finish, res.firstFrame !== null ? 0 : 250);
+    }, { once: true });
+    const onFrame = (now, meta) => {
+      if (meta.mediaTime >= target - 0.001) {
+        if (res.firstFrame === null) res.firstFrame = performance.now() - t0;
+        if (res.seeked !== null) finish();
+        return;
+      }
+      v.requestVideoFrameCallback(onFrame);
+    };
+    if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(onFrame);
+    v.currentTime = target;
+    setTimeout(finish, 3000);
+  });
+}
+
+async function seekTo(v, t) {
+  await new Promise((r) => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; r(); } };
+    v.addEventListener('seeked', fin, { once: true });
+    v.currentTime = t;
+    setTimeout(fin, 3000);
+  });
+}
+
+async function runDirection(v, base, delta, iters) {
+  const rows = [];
+  for (let i = 0; i < iters; i++) {
+    const from = delta > 0 ? base : base + Math.abs(delta);
+    await seekTo(v, from);
+    await new Promise((r) => setTimeout(r, 60));
+    rows.push(await measureOne(v, from + delta));
+  }
+  return {
+    n: rows.length,
+    firstFrame: median(rows.map((r) => r.firstFrame)),
+    seeked: median(rows.map((r) => r.seeked)),
+    waiting: median(rows.map((r) => r.waiting)),
+    raw: rows,
+  };
+}
+
+async function loadDirect(v) {
+  v.src = 'direct.mp4';
+  await new Promise((res, rej) => {
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('direct media error ' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('direct load timeout, readyState=' + v.readyState)), 20000);
+  });
+}
+
+async function loadMSE(v) {
+  const buf = await (await fetch('frag.mp4')).arrayBuffer();
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
+  const sb = ms.addSourceBuffer('video/mp4; codecs="avc1.640020, mp4a.40.2"');
+  await new Promise((res, rej) => {
+    sb.addEventListener('updateend', res, { once: true });
+    sb.addEventListener('error', () => rej(new Error('sourcebuffer error')), { once: true });
+    sb.appendBuffer(buf);
+  });
+  ms.endOfStream();
+  await new Promise((r) => { if (v.readyState >= 2) return r(); v.addEventListener('loadeddata', r, { once: true }); });
+}
+
+async function runSuite(mode, iters) {
+  const v = $('v');
+  setStatus(`loading (${mode}) ...`);
+  if (mode === 'mse') await loadMSE(v); else await loadDirect(v);
+  await seekTo(v, 5);
+  setStatus(`measuring ${mode} +10 s ...`);
+  const fwd = await runDirection(v, 5, 10, iters);
+  setStatus(`measuring ${mode} -10 s ...`);
+  const back = await runDirection(v, 5, -10, iters);
+  return { mode, duration: v.duration, forward: fwd, backward: back };
+}
+
+function fmt(x) { return x === null || x === undefined ? 'n/a' : x.toFixed(1); }
+
+function renderTable(title, suite) {
+  const t = document.createElement('table');
+  t.innerHTML = `<caption>${title}</caption>
+    <tr><th>seek</th><th></th><th>firstFrame (ms)</th><th>seeked (ms)</th><th>waiting (ms)</th></tr>
+    <tr><td>+10 s</td><td></td><td class="num">${fmt(suite.forward.firstFrame)}</td><td class="num">${fmt(suite.forward.seeked)}</td><td class="num">${fmt(suite.forward.waiting)}</td></tr>
+    <tr><td>-10 s</td><td></td><td class="num">${fmt(suite.backward.firstFrame)}</td><td class="num">${fmt(suite.backward.seeked)}</td><td class="num">${fmt(suite.backward.waiting)}</td></tr>`;
+  $('tables').appendChild(t);
+}
+
+async function runAll() {
+  $('run').disabled = true;
+  $('tables').innerHTML = '';
+  const iters = parseInt($('iters').value, 10) || 15;
+  const result = { ua: navigator.userAgent, iters };
+  try {
+    result.direct = await runSuite('direct', iters);
+    renderTable('Direct progressive MP4 (median of ' + iters + ')', result.direct);
+    result.mse = await runSuite('mse', iters);
+    renderTable('MSE — fragmented MP4 (median of ' + iters + ')', result.mse);
+    setStatus('done');
+  } catch (e) {
+    result.error = e.message;
+    setStatus('ERROR: ' + e.message);
+  }
+  $('out').textContent = JSON.stringify(result, null, 2);
+  $('run').disabled = false;
+  // best-effort POST for automated harnesses; ignored when served by a plain file server
+  try {
+    await fetch('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+  } catch (e) {}
+  document.title = 'DONE';
+}
+
+$('run').addEventListener('click', runAll);
+if (new URLSearchParams(location.search).get('auto') === '1') {
+  if (new URLSearchParams(location.search).get('iters')) $('iters').value = new URLSearchParams(location.search).get('iters');
+  runAll();
+}
+</script>
+</body>
+</html>
