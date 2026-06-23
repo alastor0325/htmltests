@@ -4,30 +4,46 @@
 <meta charset="utf-8">
 <title>Seek latency harness — Bug 2049301</title>
 <style>
-  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 860px; }
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 980px; }
   h1 { font-size: 18px; }
+  h2 { font-size: 15px; margin-top: 24px; }
   video { background: #111; width: 480px; height: 270px; }
   button { font-size: 15px; padding: 8px 18px; margin: 12px 0; }
-  table { border-collapse: collapse; margin-top: 16px; }
+  table { border-collapse: collapse; margin-top: 10px; }
   th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: right; }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
   caption { font-weight: bold; text-align: left; margin: 14px 0 6px; }
   #status { color: #555; }
   .num { font-variant-numeric: tabular-nums; }
+  .na { color: #999; }
+  .note { color: #555; font-size: 13px; }
 </style>
 </head>
 <body>
 <h1>Seek-to-first-frame latency — Bug 2049301</h1>
-<p>Measures <code>video.currentTime = target</code> seek latency for a buffered
-±10&nbsp;s seek, on a direct progressive MP4 and on an MSE-appended fragmented
-MP4. Open this page in <b>Firefox</b> and in <b>Chrome</b> and compare. Primary
-metric is the <code>seeked</code> event; <code>firstFrame</code> is the
-<code>requestVideoFrameCallback</code> time (best-effort).</p>
+<p>Measures <code>video.currentTime = target</code> latency for a buffered
+±10&nbsp;s seek, across <b>three codecs</b> (H.264 / VP9 / AV1) and <b>two
+playback states</b>:</p>
+<ul>
+  <li><b>Playback seek</b> — the video is <i>playing</i> when the seek is issued,
+      so the platform decoder is alive (flushed, not torn down).</li>
+  <li><b>Dormant seek</b> — the video is <i>paused</i> long enough to go dormant
+      (Firefox releases the decoder after
+      <code>media.dormant-on-pause-timeout-ms</code>, default 5&nbsp;s), so each
+      seek recreates the decoder. The wait below is set just above that timeout.
+      Other browsers have no dormancy concept, so for them this is simply a
+      paused seek.</li>
+</ul>
+<p class="note">Primary metric is the <code>seeked</code> event (decode reached
+the target frame); <code>firstFrame</code> is the
+<code>requestVideoFrameCallback</code> time (best-effort, presentation).</p>
 
 <video id="v" muted playsinline></video>
 <div>
-  <label>iterations <input id="iters" type="number" value="15" min="3" style="width:4em"></label>
-  <button id="run">Run measurement</button>
+  <label>playback iters <input id="pIters" type="number" value="12" min="3" style="width:4em"></label>
+  &nbsp;<label>dormant iters <input id="dIters" type="number" value="6" min="2" style="width:4em"></label>
+  &nbsp;<label>dormant wait (ms) <input id="dWait" type="number" value="5500" min="0" step="500" style="width:6em"></label>
+  <br><button id="run">Run measurement</button>
 </div>
 <p id="status">idle</p>
 <div id="tables"></div>
@@ -36,6 +52,13 @@ metric is the <code>seeked</code> event; <code>firstFrame</code> is the
 <script>
 const $ = (id) => document.getElementById(id);
 const setStatus = (s) => { $('status').textContent = s; };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const CODECS = [
+  { key: 'h264', label: 'H.264', file: 'h264.mp4' },
+  { key: 'vp9',  label: 'VP9',   file: 'vp9.webm' },
+  { key: 'av1',  label: 'AV1',   file: 'av1.mp4'  },
+];
 
 function median(arr) {
   const s = arr.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
@@ -70,7 +93,7 @@ function measureOne(v, target) {
     };
     if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(onFrame);
     v.currentTime = target;
-    setTimeout(finish, 3000);
+    setTimeout(finish, 5000);
   });
 }
 
@@ -80,16 +103,24 @@ async function seekTo(v, t) {
     const fin = () => { if (!done) { done = true; r(); } };
     v.addEventListener('seeked', fin, { once: true });
     v.currentTime = t;
-    setTimeout(fin, 3000);
+    setTimeout(fin, 5000);
   });
 }
 
-async function runDirection(v, base, delta, iters) {
+// mode: 'playback' (video kept playing) or 'dormant' (paused + waited to dormancy)
+async function runDirection(v, mode, base, delta, iters, dWait) {
   const rows = [];
   for (let i = 0; i < iters; i++) {
     const from = delta > 0 ? base : base + Math.abs(delta);
-    await seekTo(v, from);
-    await new Promise((r) => setTimeout(r, 60));
+    if (mode === 'playback') {
+      if (v.paused) { await v.play().catch(() => {}); }
+      await seekTo(v, from);
+      await sleep(80);
+    } else {
+      v.pause();
+      await seekTo(v, from);
+      await sleep(dWait); // wait past the dormant-on-pause timeout to release the decoder
+    }
     rows.push(await measureOne(v, from + delta));
   }
   return {
@@ -101,63 +132,75 @@ async function runDirection(v, base, delta, iters) {
   };
 }
 
-async function loadDirect(v) {
-  v.src = 'direct.mp4';
+async function loadCodec(v, file) {
+  v.removeAttribute('src');
+  v.load();
+  v.src = file;
   await new Promise((res, rej) => {
     v.addEventListener('loadeddata', res, { once: true });
-    v.addEventListener('error', () => rej(new Error('direct media error ' + (v.error && v.error.code))), { once: true });
-    setTimeout(() => rej(new Error('direct load timeout, readyState=' + v.readyState)), 20000);
+    v.addEventListener('error', () => rej(new Error('media error code=' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout, readyState=' + v.readyState)), 20000);
   });
 }
 
-async function loadMSE(v) {
-  const buf = await (await fetch('frag.mp4')).arrayBuffer();
-  const ms = new MediaSource();
-  v.src = URL.createObjectURL(ms);
-  await new Promise((r) => ms.addEventListener('sourceopen', r, { once: true }));
-  const sb = ms.addSourceBuffer('video/mp4; codecs="avc1.640020, mp4a.40.2"');
-  await new Promise((res, rej) => {
-    sb.addEventListener('updateend', res, { once: true });
-    sb.addEventListener('error', () => rej(new Error('sourcebuffer error')), { once: true });
-    sb.appendBuffer(buf);
-  });
-  ms.endOfStream();
-  await new Promise((r) => { if (v.readyState >= 2) return r(); v.addEventListener('loadeddata', r, { once: true }); });
-}
-
-async function runSuite(mode, iters) {
+async function runCodec(codec, cfg) {
   const v = $('v');
-  setStatus(`loading (${mode}) ...`);
-  if (mode === 'mse') await loadMSE(v); else await loadDirect(v);
-  await seekTo(v, 5);
-  setStatus(`measuring ${mode} +10 s ...`);
-  const fwd = await runDirection(v, 5, 10, iters);
-  setStatus(`measuring ${mode} -10 s ...`);
-  const back = await runDirection(v, 5, -10, iters);
-  return { mode, duration: v.duration, forward: fwd, backward: back };
+  const out = { codec: codec.key, label: codec.label, supported: true };
+  try {
+    setStatus(`loading ${codec.label} ...`);
+    await loadCodec(v, codec.file);
+    out.duration = v.duration;
+    for (const mode of ['playback', 'dormant']) {
+      const iters = mode === 'playback' ? cfg.pIters : cfg.dIters;
+      setStatus(`${codec.label} / ${mode} +10 s ...`);
+      const fwd = await runDirection(v, mode, 5, 10, iters, cfg.dWait);
+      setStatus(`${codec.label} / ${mode} -10 s ...`);
+      const back = await runDirection(v, mode, 5, -10, iters, cfg.dWait);
+      out[mode] = { forward: fwd, backward: back };
+    }
+    v.pause();
+  } catch (e) {
+    out.supported = false;
+    out.error = e.message;
+  }
+  return out;
 }
 
-function fmt(x) { return x === null || x === undefined ? 'n/a' : x.toFixed(1); }
+function fmt(x) { return x === null || x === undefined ? '<span class="na">n/a</span>' : x.toFixed(1); }
 
-function renderTable(title, suite) {
+function renderCodec(out) {
+  const h = document.createElement('h2');
+  h.textContent = out.label + (out.supported ? '' : ' — UNSUPPORTED (' + out.error + ')');
+  $('tables').appendChild(h);
+  if (!out.supported) return;
+  const cell = (s, dir) => out[s] && out[s][dir]
+    ? `<td class="num">${fmt(out[s][dir].seeked)}</td><td class="num">${fmt(out[s][dir].firstFrame)}</td><td class="num">${fmt(out[s][dir].waiting)}</td>`
+    : '<td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td>';
   const t = document.createElement('table');
-  t.innerHTML = `<caption>${title}</caption>
-    <tr><th>seek</th><th></th><th>firstFrame (ms)</th><th>seeked (ms)</th><th>waiting (ms)</th></tr>
-    <tr><td>+10 s</td><td></td><td class="num">${fmt(suite.forward.firstFrame)}</td><td class="num">${fmt(suite.forward.seeked)}</td><td class="num">${fmt(suite.forward.waiting)}</td></tr>
-    <tr><td>-10 s</td><td></td><td class="num">${fmt(suite.backward.firstFrame)}</td><td class="num">${fmt(suite.backward.seeked)}</td><td class="num">${fmt(suite.backward.waiting)}</td></tr>`;
+  t.innerHTML = `<caption>${out.label} — median ms (seeked / firstFrame / waiting)</caption>
+    <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>waiting</th></tr>
+    <tr><td>playback</td><td>+10 s</td>${cell('playback', 'forward')}</tr>
+    <tr><td>playback</td><td>-10 s</td>${cell('playback', 'backward')}</tr>
+    <tr><td>dormant</td><td>+10 s</td>${cell('dormant', 'forward')}</tr>
+    <tr><td>dormant</td><td>-10 s</td>${cell('dormant', 'backward')}</tr>`;
   $('tables').appendChild(t);
 }
 
 async function runAll() {
   $('run').disabled = true;
   $('tables').innerHTML = '';
-  const iters = parseInt($('iters').value, 10) || 15;
-  const result = { ua: navigator.userAgent, iters };
+  const cfg = {
+    pIters: parseInt($('pIters').value, 10) || 12,
+    dIters: parseInt($('dIters').value, 10) || 6,
+    dWait: parseInt($('dWait').value, 10) || 5500,
+  };
+  const result = { ua: navigator.userAgent, cfg, codecs: [] };
   try {
-    result.direct = await runSuite('direct', iters);
-    renderTable('Direct progressive MP4 (median of ' + iters + ')', result.direct);
-    result.mse = await runSuite('mse', iters);
-    renderTable('MSE — fragmented MP4 (median of ' + iters + ')', result.mse);
+    for (const codec of CODECS) {
+      const out = await runCodec(codec, cfg);
+      result.codecs.push(out);
+      renderCodec(out);
+    }
     setStatus('done');
   } catch (e) {
     result.error = e.message;
@@ -173,8 +216,11 @@ async function runAll() {
 }
 
 $('run').addEventListener('click', runAll);
-if (new URLSearchParams(location.search).get('auto') === '1') {
-  if (new URLSearchParams(location.search).get('iters')) $('iters').value = new URLSearchParams(location.search).get('iters');
+const qp = new URLSearchParams(location.search);
+if (qp.get('auto') === '1') {
+  if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
+  if (qp.get('dIters')) $('dIters').value = qp.get('dIters');
+  if (qp.get('dWait')) $('dWait').value = qp.get('dWait');
   runAll();
 }
 </script>
