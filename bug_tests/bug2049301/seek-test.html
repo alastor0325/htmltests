@@ -32,9 +32,10 @@ playback states</b>:</p>
   <li><b>Dormant seek</b> — the video is <i>paused</i> long enough to go dormant
       (Firefox releases the decoder after
       <code>media.dormant-on-pause-timeout-ms</code>, default 5&nbsp;s), so each
-      seek recreates the decoder. The wait below is set just above that timeout,
-      which is why the dormant rows take a while. Other browsers have no dormancy
-      concept, so for them this is simply a paused seek.</li>
+      seek recreates the decoder. The harness stays paused just over that
+      timeout before each dormant seek, which is why the dormant rows take a
+      while. Other browsers have no dormancy concept, so for them this is simply
+      a paused seek.</li>
 </ul>
 <p class="note">Metrics (median ms): <code>seeked</code> = time to the
 <code>seeked</code> event (decode reached the target frame);
@@ -48,7 +49,6 @@ for data.</p>
 <div>
   <label>playback iters <input id="pIters" type="number" value="12" min="3" style="width:4em"></label>
   &nbsp;<label>dormant iters <input id="dIters" type="number" value="6" min="2" style="width:4em"></label>
-  &nbsp;<label>dormant wait (ms) <input id="dWait" type="number" value="5500" min="0" step="500" style="width:6em"></label>
   <br><button id="run">Run measurement</button>
 </div>
 <p id="status">idle</p>
@@ -65,6 +65,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // the frame well after seeked, so this needs to be generous.
 const FF_GRACE_MS = 2500;
 const MEASURE_CAP_MS = 9000;
+// How long to stay paused before each "dormant" seek. Dormancy is browser
+// controlled: Firefox releases the decoder after media.dormant-on-pause-timeout-ms
+// (default 5000), which a web page cannot change. So this just has to outlast
+// that timeout for the next seek to hit a cold (recreated) decoder; it does not
+// control dormancy itself. Overridable via ?dWait= only for automated runs that
+// lower the dormant timeout through prefs.
+let dormantWaitMs = 5500;
 
 const CODECS = [
   { key: 'h264', label: 'H.264', file: 'h264.mp4' },
@@ -138,7 +145,7 @@ async function seekTo(v, t) {
 }
 
 // mode: 'playback' (video kept playing) or 'dormant' (paused + waited to dormancy)
-async function runDirection(v, mode, base, delta, iters, dWait, label) {
+async function runDirection(v, mode, base, delta, iters, label) {
   const rows = [];
   for (let i = 0; i < iters; i++) {
     const from = delta > 0 ? base : base + Math.abs(delta);
@@ -149,8 +156,8 @@ async function runDirection(v, mode, base, delta, iters, dWait, label) {
     } else {
       v.pause();
       await seekTo(v, from);
-      setStatus(`${label} — waiting for dormancy (${(dWait / 1000).toFixed(1)}s), iter ${i + 1}/${iters}`);
-      await sleep(dWait); // wait past the dormant-on-pause timeout to release the decoder
+      setStatus(`${label} — waiting for dormancy (${(dormantWaitMs / 1000).toFixed(1)}s), iter ${i + 1}/${iters}`);
+      await sleep(dormantWaitMs); // wait past the dormant-on-pause timeout to release the decoder
     }
     setStatus(`${label} — measuring seek, iter ${i + 1}/${iters}`);
     rows.push(await measureOne(v, from + delta));
@@ -187,8 +194,8 @@ async function runCodec(codec, cfg) {
     for (const mode of ['playback', 'dormant']) {
       const iters = mode === 'playback' ? cfg.pIters : cfg.dIters;
       out[mode] = {
-        forward: await runDirection(v, mode, 5, 10, iters, cfg.dWait, `${codec.label} / ${mode} / +10 s`),
-        backward: await runDirection(v, mode, 5, -10, iters, cfg.dWait, `${codec.label} / ${mode} / -10 s`),
+        forward: await runDirection(v, mode, 5, 10, iters, `${codec.label} / ${mode} / +10 s`),
+        backward: await runDirection(v, mode, 5, -10, iters, `${codec.label} / ${mode} / -10 s`),
       };
     }
     v.pause();
@@ -225,7 +232,6 @@ async function runAll() {
   const cfg = {
     pIters: parseInt($('pIters').value, 10) || 12,
     dIters: parseInt($('dIters').value, 10) || 6,
-    dWait: parseInt($('dWait').value, 10) || 5500,
   };
   // Total measured seeks: each codec runs playback (fwd+back) and dormant
   // (fwd+back). Drives the progress bar.
@@ -260,7 +266,9 @@ const qp = new URLSearchParams(location.search);
 if (qp.get('auto') === '1') {
   if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
   if (qp.get('dIters')) $('dIters').value = qp.get('dIters');
-  if (qp.get('dWait')) $('dWait').value = qp.get('dWait');
+  // ?dWait= is an automation-only override (e.g. when a shorter dormant timeout
+  // is set via prefs); there is intentionally no UI control for it.
+  if (qp.get('dWait')) dormantWaitMs = parseInt(qp.get('dWait'), 10) || dormantWaitMs;
   runAll();
 }
 </script>
