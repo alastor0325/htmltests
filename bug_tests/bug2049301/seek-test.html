@@ -24,8 +24,9 @@
 <body>
 <h1>Seek-to-first-frame latency — Bug 2049301</h1>
 <p>Measures <code>video.currentTime = target</code> latency for a buffered
-±10&nbsp;s seek, across <b>three codecs</b> (H.264 / VP9 / AV1) and <b>two
-playback states</b>:</p>
+±10&nbsp;s seek, across <b>three codecs</b> (H.264 / VP9 / AV1), <b>two loading
+pipelines</b> (<code>src</code> progressive and <b>MSE</b>
+<code>appendBuffer</code>), and <b>two playback states</b>:</p>
 <ul>
   <li><b>Playback seek</b> — the video is <i>playing</i> when the seek is issued,
       so the platform decoder is alive (flushed, not torn down).</li>
@@ -74,11 +75,39 @@ const MEASURE_CAP_MS = 9000;
 // lower the dormant timeout through prefs.
 let dormantWaitMs = 5500;
 
+// Each codec is tested through two loading pipelines: progressive (video.src =
+// file) and MSE (MediaSource + appendBuffer of the matching fragmented file).
 const CODECS = [
-  { key: 'h264', label: 'H.264', file: 'h264.mp4' },
-  { key: 'vp9',  label: 'VP9',   file: 'vp9.webm' },
-  { key: 'av1',  label: 'AV1',   file: 'av1.mp4'  },
+  { key: 'h264', label: 'H.264', srcFile: 'h264.mp4', mseFile: 'mse-h264.mp4' },
+  { key: 'vp9',  label: 'VP9',   srcFile: 'vp9.webm', mseFile: 'mse-vp9.webm' },
+  { key: 'av1',  label: 'AV1',   srcFile: 'av1.mp4',  mseFile: 'mse-av1.mp4'  },
 ];
+
+const PIPELINES = ['src', 'mse'];
+
+// MSE source buffers are strict about the codecs parameter, so try a few
+// candidate strings per file and use the first the platform reports as
+// supported. The container demuxer still reads the real parameters from the
+// bitstream; this only has to be close enough to pass isTypeSupported.
+const MSE_TYPES = {
+  'mse-h264.mp4': [
+    'video/mp4; codecs="avc1.640020"', // High@3.2
+    'video/mp4; codecs="avc1.64001F"',
+    'video/mp4; codecs="avc1.4D4020"',
+    'video/mp4; codecs="avc1.640028"',
+  ],
+  'mse-vp9.webm': [
+    'video/webm; codecs="vp09.00.31.08"',
+    'video/webm; codecs="vp9"',
+    'video/webm; codecs="vp09.00.30.08"',
+    'video/webm; codecs="vp09.00.41.08"',
+  ],
+  'mse-av1.mp4': [
+    'video/mp4; codecs="av01.0.08M.08"', // Main@4.0
+    'video/mp4; codecs="av01.0.04M.08"',
+    'video/mp4; codecs="av01.0.05M.08"',
+  ],
+};
 
 let progDone = 0;
 let progTotal = 1;
@@ -174,7 +203,8 @@ async function runDirection(v, mode, base, delta, iters, label) {
   };
 }
 
-async function loadCodec(v, file) {
+// Progressive load: assign video.src directly and wait for loadeddata.
+async function loadSrc(v, file) {
   v.removeAttribute('src');
   v.load();
   v.src = file;
@@ -185,19 +215,56 @@ async function loadCodec(v, file) {
   });
 }
 
-async function runCodec(codec, cfg) {
+// MSE load: pick a supported codecs string, fetch the whole file, append it into
+// a SourceBuffer, then end the stream so the full timeline is seekable. Returns
+// the chosen MSE type string.
+async function loadMse(v, file) {
+  if (!('MediaSource' in window)) throw new Error('no MediaSource');
+  v.removeAttribute('src');
+  v.load();
+  const cands = MSE_TYPES[file] || [];
+  const type = cands.find((c) => MediaSource.isTypeSupported(c));
+  if (!type) throw new Error('no supported MSE type for ' + file);
+  const buf = await (await fetch(file)).arrayBuffer();
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  await new Promise((res, rej) => {
+    ms.addEventListener('sourceopen', res, { once: true });
+    setTimeout(() => rej(new Error('sourceopen timeout')), 12000);
+  });
+  const sb = ms.addSourceBuffer(type);
+  await new Promise((res, rej) => {
+    sb.addEventListener('updateend', res, { once: true });
+    sb.addEventListener('error', () => rej(new Error('appendBuffer error')), { once: true });
+    sb.appendBuffer(buf);
+  });
+  if (ms.readyState === 'open') ms.endOfStream();
+  await new Promise((res, rej) => {
+    if (v.readyState >= 2) return res();
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('media error code=' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout, readyState=' + v.readyState)), 20000);
+  });
+  return type;
+}
+
+// Runs the warm/cold seek loop for one (codec, pipeline) combination and returns
+// a flat result entry carrying a `pipeline` field. On load failure it returns an
+// entry with supported:false and an error message so the caller can continue.
+async function runCodec(codec, pipeline, cfg) {
   const v = $('v');
-  const out = { codec: codec.key, label: codec.label, supported: true };
+  const out = { codec: codec.key, label: codec.label, pipeline, supported: true };
   try {
-    setStatus(`loading ${codec.label} ...`);
-    await loadCodec(v, codec.file);
+    setStatus(`loading ${codec.label} (${pipeline}) ...`);
+    if (pipeline === 'mse') out.mseType = await loadMse(v, codec.mseFile);
+    else await loadSrc(v, codec.srcFile);
     out.duration = v.duration;
     const modes = cfg.dormant ? ['playback', 'dormant'] : ['playback'];
     for (const mode of modes) {
       const iters = mode === 'playback' ? cfg.pIters : cfg.dIters;
       out[mode] = {
-        forward: await runDirection(v, mode, 5, 10, iters, `${codec.label} / ${mode} / +10 s`),
-        backward: await runDirection(v, mode, 5, -10, iters, `${codec.label} / ${mode} / -10 s`),
+        forward: await runDirection(v, mode, 5, 10, iters, `${codec.label} / ${pipeline} / ${mode} / +10 s`),
+        backward: await runDirection(v, mode, 5, -10, iters, `${codec.label} / ${pipeline} / ${mode} / -10 s`),
       };
     }
     v.pause();
@@ -211,8 +278,9 @@ async function runCodec(codec, cfg) {
 function fmt(x) { return x === null || x === undefined ? '<span class="na">n/a</span>' : x.toFixed(1); }
 
 function renderCodec(out) {
+  const tag = out.pipeline === 'mse' ? 'MSE' : 'src';
   const h = document.createElement('h2');
-  h.textContent = out.label + (out.supported ? '' : ' — UNSUPPORTED (' + out.error + ')');
+  h.textContent = `${out.label} (${tag})` + (out.supported ? '' : ' — UNSUPPORTED (' + out.error + ')');
   $('tables').appendChild(h);
   if (!out.supported) return;
   const cell = (s, dir) => out[s] && out[s][dir]
@@ -228,8 +296,9 @@ function renderCodec(out) {
       `<tr><td>dormant</td><td>-10 s</td>${cell('dormant', 'backward')}</tr>`
     );
   }
+  const typeNote = out.pipeline === 'mse' && out.mseType ? ', ' + out.mseType.replace('video/', '') : '';
   const t = document.createElement('table');
-  t.innerHTML = `<caption>${out.label} — median ms (seeked / firstFrame / waiting)</caption>
+  t.innerHTML = `<caption>${out.label} (${tag}${typeNote}) — median ms (seeked / firstFrame / waiting)</caption>
     <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>waiting</th></tr>
     ${rows.join('')}`;
   $('tables').appendChild(t);
@@ -243,17 +312,20 @@ async function runAll() {
     dIters: parseInt($('dIters').value, 10) || 6,
     dormant: $('doDormant').checked,
   };
-  // Total measured seeks: each codec runs playback (fwd+back), plus dormant
-  // (fwd+back) only when the cold seeks are enabled. Drives the progress bar.
+  // Total measured seeks: each (codec, pipeline) runs playback (fwd+back), plus
+  // dormant (fwd+back) only when the cold seeks are enabled. Drives the bar.
   progDone = 0;
-  progTotal = CODECS.length * (cfg.pIters * 2 + (cfg.dormant ? cfg.dIters * 2 : 0));
+  progTotal = CODECS.length * PIPELINES.length *
+    (cfg.pIters * 2 + (cfg.dormant ? cfg.dIters * 2 : 0));
   setProgress();
   const result = { ua: navigator.userAgent, cfg, codecs: [] };
   try {
     for (const codec of CODECS) {
-      const out = await runCodec(codec, cfg);
-      result.codecs.push(out);
-      renderCodec(out);
+      for (const pipeline of PIPELINES) {
+        const out = await runCodec(codec, pipeline, cfg);
+        result.codecs.push(out);
+        renderCodec(out);
+      }
     }
     progDone = progTotal;
     setProgress();
