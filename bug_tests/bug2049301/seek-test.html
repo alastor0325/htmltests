@@ -49,6 +49,7 @@ for data.</p>
 <div>
   <label>playback iters <input id="pIters" type="number" value="12" min="3" style="width:4em"></label>
   &nbsp;<label>dormant iters <input id="dIters" type="number" value="6" min="2" style="width:4em"></label>
+  <br><label><input type="checkbox" id="doDormant"> also run cold (dormant) seeks — slow: waits out the ~5&nbsp;s dormant timeout before each seek</label>
   <br><button id="run">Run measurement</button>
 </div>
 <p id="status">idle</p>
@@ -191,7 +192,8 @@ async function runCodec(codec, cfg) {
     setStatus(`loading ${codec.label} ...`);
     await loadCodec(v, codec.file);
     out.duration = v.duration;
-    for (const mode of ['playback', 'dormant']) {
+    const modes = cfg.dormant ? ['playback', 'dormant'] : ['playback'];
+    for (const mode of modes) {
       const iters = mode === 'playback' ? cfg.pIters : cfg.dIters;
       out[mode] = {
         forward: await runDirection(v, mode, 5, 10, iters, `${codec.label} / ${mode} / +10 s`),
@@ -216,13 +218,20 @@ function renderCodec(out) {
   const cell = (s, dir) => out[s] && out[s][dir]
     ? `<td class="num">${fmt(out[s][dir].seeked)}</td><td class="num">${fmt(out[s][dir].firstFrame)}</td><td class="num">${fmt(out[s][dir].waiting)}</td>`
     : '<td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td>';
+  const rows = [
+    `<tr><td>playback</td><td>+10 s</td>${cell('playback', 'forward')}</tr>`,
+    `<tr><td>playback</td><td>-10 s</td>${cell('playback', 'backward')}</tr>`,
+  ];
+  if (out.dormant) {
+    rows.push(
+      `<tr><td>dormant</td><td>+10 s</td>${cell('dormant', 'forward')}</tr>`,
+      `<tr><td>dormant</td><td>-10 s</td>${cell('dormant', 'backward')}</tr>`
+    );
+  }
   const t = document.createElement('table');
   t.innerHTML = `<caption>${out.label} — median ms (seeked / firstFrame / waiting)</caption>
     <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>waiting</th></tr>
-    <tr><td>playback</td><td>+10 s</td>${cell('playback', 'forward')}</tr>
-    <tr><td>playback</td><td>-10 s</td>${cell('playback', 'backward')}</tr>
-    <tr><td>dormant</td><td>+10 s</td>${cell('dormant', 'forward')}</tr>
-    <tr><td>dormant</td><td>-10 s</td>${cell('dormant', 'backward')}</tr>`;
+    ${rows.join('')}`;
   $('tables').appendChild(t);
 }
 
@@ -232,11 +241,12 @@ async function runAll() {
   const cfg = {
     pIters: parseInt($('pIters').value, 10) || 12,
     dIters: parseInt($('dIters').value, 10) || 6,
+    dormant: $('doDormant').checked,
   };
-  // Total measured seeks: each codec runs playback (fwd+back) and dormant
-  // (fwd+back). Drives the progress bar.
+  // Total measured seeks: each codec runs playback (fwd+back), plus dormant
+  // (fwd+back) only when the cold seeks are enabled. Drives the progress bar.
   progDone = 0;
-  progTotal = CODECS.length * (cfg.pIters * 2 + cfg.dIters * 2);
+  progTotal = CODECS.length * (cfg.pIters * 2 + (cfg.dormant ? cfg.dIters * 2 : 0));
   setProgress();
   const result = { ua: navigator.userAgent, cfg, codecs: [] };
   try {
@@ -263,14 +273,14 @@ async function runAll() {
 
 $('run').addEventListener('click', runAll);
 const qp = new URLSearchParams(location.search);
-if (qp.get('auto') === '1') {
-  if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
-  if (qp.get('dIters')) $('dIters').value = qp.get('dIters');
-  // ?dWait= is an automation-only override (e.g. when a shorter dormant timeout
-  // is set via prefs); there is intentionally no UI control for it.
-  if (qp.get('dWait')) dormantWaitMs = parseInt(qp.get('dWait'), 10) || dormantWaitMs;
-  runAll();
-}
+if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
+if (qp.get('dIters')) $('dIters').value = qp.get('dIters');
+// Cold (dormant) seeks are off by default; ?dormant=1 opts in (used by automation).
+if (qp.get('dormant') === '1') $('doDormant').checked = true;
+// ?dWait= is an automation-only override (e.g. when a shorter dormant timeout
+// is set via prefs); there is intentionally no UI control for it.
+if (qp.get('dWait')) dormantWaitMs = parseInt(qp.get('dWait'), 10) || dormantWaitMs;
+if (qp.get('auto') === '1') runAll();
 </script>
 </body>
 </html>
