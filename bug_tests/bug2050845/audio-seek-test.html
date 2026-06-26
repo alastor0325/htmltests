@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Audible vs muted seek-resume latency — Bug 2050845</title>
+<style>
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 1000px; }
+  h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 20px; }
+  video { background: #111; width: 426px; height: 240px; }
+  table { border-collapse: collapse; margin-top: 10px; }
+  th, td { border: 1px solid #ccc; padding: 5px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  caption { font-weight: bold; text-align: left; margin: 12px 0 6px; }
+  #status { color: #333; font-weight: 600; } .na { color: #aaa; }
+  .num { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<h1>Audible vs muted seek-resume latency — Bug 2050845</h1>
+<p>Warm (playing) ±10&nbsp;s seeks across <b>codec</b> (AV1 / H.264) ×
+<b>pipeline</b> (plain <code>src</code> / split-MSE: separate video+audio
+SourceBuffers) × <b>audio</b> (audible / muted). Same audio+video bytes in both
+audible and muted runs. Metric of interest: <code>resumed</code> = time from
+the seek until the playback clock advances past the target (what the audio-sink
+restart gates).</p>
+<video id="v" playsinline></video>
+<div>
+  <label>iters <input id="pIters" type="number" value="10" min="3" style="width:4em"></label>
+  <button id="run">Run</button>
+</div>
+<p id="status">idle</p>
+<div id="tables"></div>
+<details><summary>raw JSON</summary><pre id="out"></pre></details>
+<script>
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const MEASURE_CAP_MS = 6000;
+const RESUME_MARGIN = 0.10; // s of media the clock must advance past target to count as "resumed"
+
+const CODECS = {
+  av1:  { src: 'av1.mp4',  vfile: 'mse-av1-v.mp4',  vtype: 'video/mp4; codecs="av01.0.08M.08"' },
+  h264: { src: 'h264.mp4', vfile: 'mse-h264-v.mp4', vtype: 'video/mp4; codecs="avc1.640020"' },
+};
+const AUDIO = { afile: (c) => `mse-${c}-a.mp4`, atype: 'audio/mp4; codecs="mp4a.40.2"' };
+// matrix
+const CONFIGS = [];
+for (const codec of ['av1', 'h264'])
+  for (const pipeline of ['src', 'mse'])
+    for (const muted of [false, true])
+      CONFIGS.push({ codec, pipeline, muted });
+
+function median(arr) {
+  const s = arr.filter((x) => x != null).sort((a, b) => a - b);
+  if (!s.length) return null;
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
+async function loadSrc(v, file, muted) {
+  v.removeAttribute('src'); v.load();
+  v.muted = muted; v.src = file;
+  await new Promise((res, rej) => {
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('media ' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout')), 20000);
+  });
+}
+
+async function loadMse(v, vfile, vtype, afile, atype, muted) {
+  v.removeAttribute('src'); v.load(); v.muted = muted;
+  for (const t of [vtype, atype]) if (!MediaSource.isTypeSupported(t)) throw new Error('unsupported ' + t);
+  const [vbuf, abuf] = await Promise.all([
+    fetch(vfile).then((r) => r.arrayBuffer()),
+    fetch(afile).then((r) => r.arrayBuffer()),
+  ]);
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  await new Promise((res, rej) => { ms.addEventListener('sourceopen', res, { once: true }); setTimeout(() => rej(new Error('sourceopen timeout')), 12000); });
+  const append = (sb, buf) => new Promise((res, rej) => {
+    sb.addEventListener('updateend', res, { once: true });
+    sb.addEventListener('error', () => rej(new Error('append error')), { once: true });
+    sb.appendBuffer(buf);
+  });
+  const vsb = ms.addSourceBuffer(vtype);
+  const asb = ms.addSourceBuffer(atype);
+  await append(vsb, vbuf);
+  await append(asb, abuf);
+  if (ms.readyState === 'open') ms.endOfStream();
+  await new Promise((res, rej) => {
+    if (v.readyState >= 2) return res();
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('media ' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout rs=' + v.readyState)), 20000);
+  });
+}
+
+// Warm seek while playing: measure decode-to-target and clock-resume.
+function measureSeek(v, target) {
+  return new Promise((resolve) => {
+    const res = { seeked: null, firstFrame: null, resumed: null };
+    const t0 = performance.now();
+    let done = false, iv = 0, cap = 0;
+    const finish = () => { if (done) return; done = true; clearInterval(iv); clearTimeout(cap); resolve(res); };
+    v.addEventListener('seeked', () => { if (res.seeked === null) res.seeked = performance.now() - t0; }, { once: true });
+    // requestVideoFrameCallback is paused for background/occluded windows, so
+    // firstFrame is best-effort; the resumed metric below uses a timer so it
+    // works without the window being focused.
+    const onFrame = (now, meta) => {
+      if (res.firstFrame === null && meta.mediaTime >= target - 0.001) res.firstFrame = performance.now() - t0;
+      if (!done) v.requestVideoFrameCallback(onFrame);
+    };
+    if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(onFrame);
+    // Poll the clock via setInterval (timers keep running in the background).
+    iv = setInterval(() => {
+      if (!v.paused && v.currentTime > target + RESUME_MARGIN) { res.resumed = performance.now() - t0; finish(); }
+    }, 15);
+    cap = setTimeout(finish, MEASURE_CAP_MS);
+    v.currentTime = target;
+  });
+}
+
+async function seekTo(v, t) {
+  await new Promise((r) => { let d = 0; const f = () => { if (!d) { d = 1; r(); } }; v.addEventListener('seeked', f, { once: true }); v.currentTime = t; setTimeout(f, 5000); });
+}
+
+async function runConfig(cfg, iters) {
+  const v = $('v');
+  const out = { codec: cfg.codec, pipeline: cfg.pipeline, muted: cfg.muted, supported: true };
+  try {
+    const C = CODECS[cfg.codec];
+    setStatus(`loading ${cfg.codec}/${cfg.pipeline}/${cfg.muted ? 'muted' : 'audible'} ...`);
+    if (cfg.pipeline === 'src') await loadSrc(v, C.src, cfg.muted);
+    else await loadMse(v, C.vfile, C.vtype, AUDIO.afile(cfg.codec), AUDIO.atype, cfg.muted);
+    // play() may stall if the audio device can't initialize (e.g. headless/no
+    // audio output) — bound it so one config can't hang the whole matrix.
+    await Promise.race([v.play(), sleep(6000).then(() => { throw new Error('play() stalled (no audio device?)'); })]);
+    await seekTo(v, 5); await sleep(200);
+    const rows = [];
+    const early = 1.9, late = 31.9; // far-apart, both mid-GOP -> long buffered seeks
+    for (let i = 0; i < iters; i++) {
+      const target = i % 2 === 0 ? late : early;
+      if (v.paused) await v.play().catch(() => {});
+      setStatus(`${cfg.codec}/${cfg.pipeline}/${cfg.muted ? 'muted' : 'audible'} seek ${i + 1}/${iters}`);
+      rows.push(await measureSeek(v, target));
+      await sleep(120);
+    }
+    v.pause();
+    out.n = rows.length;
+    out.seeked = median(rows.map((r) => r.seeked));
+    out.firstFrame = median(rows.map((r) => r.firstFrame));
+    out.resumed = median(rows.map((r) => r.resumed));
+    out.raw = rows;
+  } catch (e) { out.supported = false; out.error = String(e); }
+  return out;
+}
+
+function setStatus(s) { $('status').textContent = s; }
+const fmt = (x) => (x == null ? '<span class="na">n/a</span>' : x.toFixed(1));
+
+function render(all) {
+  const byCodec = {};
+  for (const r of all) (byCodec[r.codec] ||= []).push(r);
+  $('tables').innerHTML = '';
+  for (const codec of Object.keys(byCodec)) {
+    const t = document.createElement('table');
+    let rows = '';
+    for (const r of byCodec[codec]) {
+      rows += r.supported
+        ? `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td class="num">${fmt(r.seeked)}</td><td class="num">${fmt(r.firstFrame)}</td><td class="num">${fmt(r.resumed)}</td></tr>`
+        : `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td colspan=3 class="na">${r.error}</td></tr>`;
+    }
+    t.innerHTML = `<caption>${codec.toUpperCase()} — median ms</caption>
+      <tr><th>pipeline</th><th>audio</th><th>seeked</th><th>firstFrame</th><th>resumed</th></tr>${rows}`;
+    $('tables').appendChild(t);
+  }
+}
+
+async function runAll() {
+  $('run').disabled = true;
+  const iters = parseInt($('pIters').value, 10) || 10;
+  const result = { ua: navigator.userAgent, configs: [] };
+  const qp2 = new URLSearchParams(location.search);
+  const onlyAudio = qp2.get('audio'); // 'muted' | 'audible' | null(both)
+  const onlyCodec = qp2.get('codec'); // 'av1' | 'h264' | null
+  const onlyPipe = qp2.get('pipeline'); // 'src' | 'mse' | null
+  const configs = CONFIGS.filter((c) =>
+    (!onlyCodec || c.codec === onlyCodec) &&
+    (!onlyPipe || c.pipeline === onlyPipe) &&
+    (!onlyAudio || (onlyAudio === 'muted') === c.muted));
+  for (const cfg of configs) {
+    const out = await runConfig(cfg, iters);
+    result.configs.push(out);
+    render(result.configs);
+  }
+  setStatus('done');
+  $('out').textContent = JSON.stringify(result, null, 2);
+  $('run').disabled = false;
+  try { await fetch('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) }); } catch (e) {}
+  document.title = 'DONE';
+}
+
+$('run').addEventListener('click', runAll);
+const qp = new URLSearchParams(location.search);
+if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
+if (qp.get('auto') === '1') runAll();
+</script>
+</body>
+</html>
