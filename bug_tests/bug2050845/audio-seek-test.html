@@ -35,7 +35,10 @@ restart gates).</p>
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MEASURE_CAP_MS = 6000;
-const RESUME_MARGIN = 0.10; // s of media the clock must advance past target to count as "resumed"
+// Media (s) the clock must advance past the target to count as "resumed". 20ms
+// matches the reporter's harness (bug 2050845); a larger margin masks the
+// audio-sink-restart penalty, so keep it small.
+const RESUME_MARGIN = 0.020;
 
 const CODECS = {
   av1:  { src: 'av1.mp4',  vfile: 'mse-av1-v.mp4',  vtype: 'video/mp4; codecs="av01.0.08M.08"' },
@@ -94,25 +97,42 @@ async function loadMse(v, vfile, vtype, afile, atype, muted) {
   });
 }
 
-// Warm seek while playing: measure decode-to-target and clock-resume.
+// Warm seek while playing. Metrics match the reporter's bug-2050845 harness:
+//   seeked     - time to the 'seeked' event
+//   firstFrame - time to the first presented frame at/after the target (rVFC)
+//   futureData - time to (!seeking && readyState >= HAVE_FUTURE_DATA)
+//   waiting    - time to the first 'waiting' event (stall onset; null = no stall)
+//   resumed    - time until the timeline actually advances past target by
+//                RESUME_MARGIN while not paused/seeking and HAVE_FUTURE_DATA
 function measureSeek(v, target) {
   return new Promise((resolve) => {
-    const res = { seeked: null, firstFrame: null, resumed: null };
+    const res = { seeked: null, firstFrame: null, futureData: null, waiting: null, resumed: null };
     const t0 = performance.now();
     let done = false, iv = 0, cap = 0;
-    const finish = () => { if (done) return; done = true; clearInterval(iv); clearTimeout(cap); resolve(res); };
+    const onWaiting = () => { if (res.waiting === null) res.waiting = performance.now() - t0; };
+    const finish = () => {
+      if (done) return;
+      done = true; clearInterval(iv); clearTimeout(cap);
+      v.removeEventListener('waiting', onWaiting); resolve(res);
+    };
     v.addEventListener('seeked', () => { if (res.seeked === null) res.seeked = performance.now() - t0; }, { once: true });
+    v.addEventListener('waiting', onWaiting);
     // requestVideoFrameCallback is paused for background/occluded windows, so
-    // firstFrame is best-effort; the resumed metric below uses a timer so it
-    // works without the window being focused.
+    // firstFrame is best-effort; futureData/resumed use a timer so they work
+    // without the window being focused.
     const onFrame = (now, meta) => {
       if (res.firstFrame === null && meta.mediaTime >= target - 0.001) res.firstFrame = performance.now() - t0;
       if (!done) v.requestVideoFrameCallback(onFrame);
     };
     if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(onFrame);
-    // Poll the clock via setInterval (timers keep running in the background).
+    // Poll via setInterval (timers keep running in the background).
     iv = setInterval(() => {
-      if (!v.paused && v.currentTime > target + RESUME_MARGIN) { res.resumed = performance.now() - t0; finish(); }
+      const ready = !v.seeking && v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
+      if (res.futureData === null && ready) res.futureData = performance.now() - t0;
+      if (res.resumed === null && !v.paused && ready && v.currentTime >= target + RESUME_MARGIN) {
+        res.resumed = performance.now() - t0;
+      }
+      if (res.resumed !== null && res.firstFrame !== null) finish();
     }, 15);
     cap = setTimeout(finish, MEASURE_CAP_MS);
     v.currentTime = target;
@@ -136,7 +156,9 @@ async function runConfig(cfg, iters) {
     await Promise.race([v.play(), sleep(6000).then(() => { throw new Error('play() stalled (no audio device?)'); })]);
     await seekTo(v, 5); await sleep(200);
     const rows = [];
-    const early = 1.9, late = 31.9; // far-apart, both mid-GOP -> long buffered seeks
+    const early = 8.0, late = 18.0; // ~10s apart (matches the reporter harness) so
+                                    // the audio-sink penalty isn't masked by a
+                                    // decode-heavy long seek
     for (let i = 0; i < iters; i++) {
       const target = i % 2 === 0 ? late : early;
       if (v.paused) await v.play().catch(() => {});
@@ -148,7 +170,9 @@ async function runConfig(cfg, iters) {
     out.n = rows.length;
     out.seeked = median(rows.map((r) => r.seeked));
     out.firstFrame = median(rows.map((r) => r.firstFrame));
+    out.futureData = median(rows.map((r) => r.futureData));
     out.resumed = median(rows.map((r) => r.resumed));
+    out.waiting = median(rows.map((r) => r.waiting));
     out.raw = rows;
   } catch (e) { out.supported = false; out.error = String(e); }
   return out;
@@ -166,11 +190,11 @@ function render(all) {
     let rows = '';
     for (const r of byCodec[codec]) {
       rows += r.supported
-        ? `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td class="num">${fmt(r.seeked)}</td><td class="num">${fmt(r.firstFrame)}</td><td class="num">${fmt(r.resumed)}</td></tr>`
-        : `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td colspan=3 class="na">${r.error}</td></tr>`;
+        ? `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td class="num">${fmt(r.seeked)}</td><td class="num">${fmt(r.firstFrame)}</td><td class="num">${fmt(r.futureData)}</td><td class="num">${fmt(r.resumed)}</td><td class="num">${fmt(r.waiting)}</td></tr>`
+        : `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td colspan=5 class="na">${r.error}</td></tr>`;
     }
     t.innerHTML = `<caption>${codec.toUpperCase()} — median ms</caption>
-      <tr><th>pipeline</th><th>audio</th><th>seeked</th><th>firstFrame</th><th>resumed</th></tr>${rows}`;
+      <tr><th>pipeline</th><th>audio</th><th>seeked</th><th>firstFrame</th><th>futureData</th><th>resumed</th><th>waiting</th></tr>${rows}`;
     $('tables').appendChild(t);
   }
 }
