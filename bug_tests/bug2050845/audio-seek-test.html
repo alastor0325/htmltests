@@ -23,6 +23,9 @@
   .num { font-variant-numeric: tabular-nums; }
   .na { color: #aaa; }
   .note { color: #555; font-size: 13px; }
+  /* The key metric (resumed): the audible seek-resume latency this bug targets. */
+  .key { color: #c00; font-weight: bold; }
+  th.key, td.key { background: #fff0f0; }
 </style>
 </head>
 <body>
@@ -45,10 +48,20 @@ video/audio <code>SourceBuffer</code>s), and <b>two playback states</b>:</p>
 <p class="note">Metrics (median ms): <code>seeked</code> = time to the
 <code>seeked</code> event (decode reached the target frame);
 <code>firstFrame</code> = time to the first presented frame at/after the target
-(<code>requestVideoFrameCallback</code>); <code>waiting</code> = time to the
+(<code>requestVideoFrameCallback</code>); <code>futureData</code> = time until
+<code>readyState</code> reaches <code>HAVE_FUTURE_DATA</code> (enough buffered to
+keep playing); <code class="key">resumed</code> = time until
+<code>currentTime</code> actually advances past the target (+20&nbsp;ms) with
+playback running and not seeking; <code>waiting</code> = time to the
 <code>waiting</code> event. <span class="na">n/a</span> means the event never
 fired — for <code>waiting</code> that usually just means the seek did not stall
 for data.</p>
+<p class="note"><b><code class="key">resumed</code> is the key metric</b> — it
+is the user-visible audible seek-resume latency this bug is about (how long until
+sound and the timeline actually come back after the seek), so it is highlighted
+in <span class="key">red</span>. The others are diagnostic: they break down where
+that time goes (decode → first frame → enough buffered → resumed), and
+<code>waiting</code> flags a stall.</p>
 
 <video id="v" playsinline></video>
 <div>
@@ -358,8 +371,8 @@ function renderCodec(out) {
   $('tables').appendChild(h);
   if (!out.supported) return;
   const cell = (s, dir) => out[s] && out[s][dir]
-    ? `<td class="num">${fmt(out[s][dir].seeked)}</td><td class="num">${fmt(out[s][dir].firstFrame)}</td><td class="num">${fmt(out[s][dir].futureData)}</td><td class="num">${fmt(out[s][dir].resumed)}</td><td class="num">${fmt(out[s][dir].waiting)}</td>`
-    : '<td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td>';
+    ? `<td class="num">${fmt(out[s][dir].seeked)}</td><td class="num">${fmt(out[s][dir].firstFrame)}</td><td class="num">${fmt(out[s][dir].futureData)}</td><td class="num key">${fmt(out[s][dir].resumed)}</td><td class="num">${fmt(out[s][dir].waiting)}</td>`
+    : '<td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td><td class="na key">n/a</td><td class="na">n/a</td>';
   const rows = [
     `<tr><td>playback</td><td>+10 s</td>${cell('playback', 'forward')}</tr>`,
     `<tr><td>playback</td><td>-10 s</td>${cell('playback', 'backward')}</tr>`,
@@ -375,7 +388,7 @@ function renderCodec(out) {
     : '';
   const t = document.createElement('table');
   t.innerHTML = `<caption>${out.label} (${tag}${typeNote}) — median ms</caption>
-    <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>futureData</th><th>resumed</th><th>waiting</th></tr>
+    <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>futureData</th><th class="key">resumed</th><th>waiting</th></tr>
     ${rows.join('')}`;
   $('tables').appendChild(t);
 }
