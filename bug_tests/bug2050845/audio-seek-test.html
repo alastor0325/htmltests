@@ -1,232 +1,475 @@
 <!DOCTYPE html>
+<!-- Seek-resume latency harness for Bug 2050845. Methodology ported from the
+     reporter's public harness (github.com/wilmtang/firefox-video-seek-experiment):
+     settle-then-measure directional +/-10s seeks, event-driven resumed/futureData,
+     20ms advance margin. Media generated locally (see make-media). -->
 <html>
 <head>
 <meta charset="utf-8">
 <title>Audible vs muted seek-resume latency — Bug 2050845</title>
 <style>
-  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 1000px; }
-  h1 { font-size: 18px; } h2 { font-size: 15px; margin-top: 20px; }
-  video { background: #111; width: 426px; height: 240px; }
+  body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 980px; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 15px; margin-top: 24px; }
+  video { background: #111; width: 480px; height: 270px; }
+  button { font-size: 15px; padding: 8px 18px; margin: 12px 0; }
   table { border-collapse: collapse; margin-top: 10px; }
-  th, td { border: 1px solid #ccc; padding: 5px 10px; text-align: right; }
-  th:first-child, td:first-child { text-align: left; }
-  caption { font-weight: bold; text-align: left; margin: 12px 0 6px; }
-  #status { color: #333; font-weight: 600; } .na { color: #aaa; }
+  th, td { border: 1px solid #ccc; padding: 6px 12px; text-align: right; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  caption { font-weight: bold; text-align: left; margin: 14px 0 6px; }
+  #status { color: #333; font-weight: 600; margin: 6px 0 2px; }
+  #bar { width: 480px; height: 16px; vertical-align: middle; }
+  #pct { color: #555; margin-left: 8px; font-variant-numeric: tabular-nums; }
   .num { font-variant-numeric: tabular-nums; }
+  .na { color: #aaa; }
+  .note { color: #555; font-size: 13px; }
 </style>
 </head>
 <body>
 <h1>Audible vs muted seek-resume latency — Bug 2050845</h1>
-<p>Warm (playing) ±10&nbsp;s seeks across <b>codec</b> (AV1 / H.264) ×
-<b>pipeline</b> (plain <code>src</code> / split-MSE: separate video+audio
-SourceBuffers) × <b>audio</b> (audible / muted). Same audio+video bytes in both
-audible and muted runs. Metric of interest: <code>resumed</code> = time from
-the seek until the playback clock advances past the target (what the audio-sink
-restart gates).</p>
+<p>Measures <code>video.currentTime = target</code> latency for a buffered
+±10&nbsp;s seek, across <b>three codecs</b> (H.264 / VP9 / AV1), <b>two loading
+pipelines</b> (<code>src</code> progressive and <b>MSE</b> with separate
+video/audio <code>SourceBuffer</code>s), and <b>two playback states</b>:</p>
+<ul>
+  <li><b>Playback seek</b> — the video is <i>playing</i> when the seek is issued,
+      so the platform decoder is alive (flushed, not torn down).</li>
+  <li><b>Dormant seek</b> — the video is <i>paused</i> long enough to go dormant
+      (Firefox releases the decoder after
+      <code>media.dormant-on-pause-timeout-ms</code>, default 5&nbsp;s), so each
+      seek recreates the decoder. The harness stays paused just over that
+      timeout before each dormant seek, which is why the dormant rows take a
+      while. Other browsers have no dormancy concept, so for them this is simply
+      a paused seek.</li>
+</ul>
+<p class="note">Metrics (median ms): <code>seeked</code> = time to the
+<code>seeked</code> event (decode reached the target frame);
+<code>firstFrame</code> = time to the first presented frame at/after the target
+(<code>requestVideoFrameCallback</code>); <code>waiting</code> = time to the
+<code>waiting</code> event. <span class="na">n/a</span> means the event never
+fired — for <code>waiting</code> that usually just means the seek did not stall
+for data.</p>
+
 <video id="v" playsinline></video>
 <div>
-  <label>iters <input id="pIters" type="number" value="10" min="3" style="width:4em"></label>
-  <button id="run">Run</button>
+  <label>playback iters <input id="pIters" type="number" value="12" min="3" style="width:4em"></label>
+  &nbsp;<label>dormant iters <input id="dIters" type="number" value="6" min="2" style="width:4em"></label>
+  &nbsp;<label><input type="checkbox" id="muted"> muted</label>
+  <br><label><input type="checkbox" id="doDormant"> also run cold (dormant) seeks — slow: waits out the ~5&nbsp;s dormant timeout before each seek</label>
+  <br><button id="run">Run measurement</button>
 </div>
 <p id="status">idle</p>
+<div><progress id="bar" value="0" max="1"></progress><span id="pct"></span></div>
 <div id="tables"></div>
 <details><summary>raw JSON</summary><pre id="out"></pre></details>
+
 <script>
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const MEASURE_CAP_MS = 6000;
-// Media (s) the clock must advance past the target to count as "resumed". 20ms
-// matches the reporter's harness (bug 2050845); a larger margin masks the
-// audio-sink-restart penalty, so keep it small.
-const RESUME_MARGIN = 0.020;
 
-const CODECS = {
-  av1:  { src: 'av1.mp4',  vfile: 'mse-av1-v.mp4',  vtype: 'video/mp4; codecs="av01.0.08M.08"' },
-  h264: { src: 'h264.mp4', vfile: 'mse-h264-v.mp4', vtype: 'video/mp4; codecs="avc1.640020"' },
+// First-frame capture: how long to keep waiting, after the seeked event, for the
+// target frame to actually be presented (rVFC). Cold/dormant seeks can present
+// the frame well after seeked, so this needs to be generous.
+const FF_GRACE_MS = 2500;
+const MEASURE_CAP_MS = 9000;
+const READY_POLL_MS = 4;
+const PLAYBACK_ADVANCE_S = 0.02;
+// How long to stay paused before each "dormant" seek. Dormancy is browser
+// controlled: Firefox releases the decoder after media.dormant-on-pause-timeout-ms
+// (default 5000), which a web page cannot change. So this just has to outlast
+// that timeout for the next seek to hit a cold (recreated) decoder; it does not
+// control dormancy itself. Overridable via ?dWait= only for automated runs that
+// lower the dormant timeout through prefs.
+let dormantWaitMs = 5500;
+
+// Each codec is tested through two loading pipelines: progressive (video.src =
+// file) and MSE (MediaSource + separate video/audio SourceBuffers, like an
+// adaptive streaming site).
+const CODECS = [
+  { key: 'h264', label: 'H.264', srcFile: 'h264.mp4', mseVideoFile: 'mse-h264-video.mp4', mseAudioFile: 'mse-aac-audio.mp4' },
+  { key: 'vp9',  label: 'VP9',   srcFile: 'vp9.webm', mseVideoFile: 'mse-vp9-video.webm', mseAudioFile: 'mse-opus-audio.webm' },
+  { key: 'av1',  label: 'AV1',   srcFile: 'av1.mp4',  mseVideoFile: 'mse-av1-video.mp4',  mseAudioFile: 'mse-opus-audio.webm' },
+];
+
+const PIPELINES = ['src', 'mse'];
+
+// MSE source buffers are strict about the codecs parameter, so try a few
+// candidate strings per file and use the first the platform reports as
+// supported. The container demuxer still reads the real parameters from the
+// bitstream; this only has to be close enough to pass isTypeSupported.
+const MSE_TYPES = {
+  'mse-h264-video.mp4': [
+    'video/mp4; codecs="avc1.640020"', // High@3.2
+    'video/mp4; codecs="avc1.64001F"',
+    'video/mp4; codecs="avc1.4D4020"',
+    'video/mp4; codecs="avc1.640028"',
+  ],
+  'mse-vp9-video.webm': [
+    'video/webm; codecs="vp09.00.31.08"',
+    'video/webm; codecs="vp9"',
+    'video/webm; codecs="vp09.00.30.08"',
+    'video/webm; codecs="vp09.00.41.08"',
+  ],
+  'mse-av1-video.mp4': [
+    'video/mp4; codecs="av01.0.08M.08"', // Main@4.0
+    'video/mp4; codecs="av01.0.04M.08"',
+    'video/mp4; codecs="av01.0.05M.08"',
+  ],
+  'mse-aac-audio.mp4': [
+    'audio/mp4; codecs="mp4a.40.2"',
+  ],
+  'mse-opus-audio.webm': [
+    'audio/webm; codecs="opus"',
+  ],
 };
-const AUDIO = { afile: (c) => `mse-${c}-a.mp4`, atype: 'audio/mp4; codecs="mp4a.40.2"' };
-// matrix
-const CONFIGS = [];
-for (const codec of ['av1', 'h264'])
-  for (const pipeline of ['src', 'mse'])
-    for (const muted of [false, true])
-      CONFIGS.push({ codec, pipeline, muted });
+
+let progDone = 0;
+let progTotal = 1;
+function setStatus(s) { $('status').textContent = s; }
+function setProgress() {
+  $('bar').value = progDone;
+  $('bar').max = progTotal;
+  $('pct').textContent = `${progDone}/${progTotal}`;
+}
 
 function median(arr) {
-  const s = arr.filter((x) => x != null).sort((a, b) => a - b);
+  const s = arr.filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
   if (!s.length) return null;
-  const m = s.length >> 1;
+  const m = Math.floor(s.length / 2);
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-async function loadSrc(v, file, muted) {
-  v.removeAttribute('src'); v.load();
-  v.muted = muted; v.src = file;
-  await new Promise((res, rej) => {
-    v.addEventListener('loadeddata', res, { once: true });
-    v.addEventListener('error', () => rej(new Error('media ' + (v.error && v.error.code))), { once: true });
-    setTimeout(() => rej(new Error('load timeout')), 20000);
-  });
-}
-
-async function loadMse(v, vfile, vtype, afile, atype, muted) {
-  v.removeAttribute('src'); v.load(); v.muted = muted;
-  for (const t of [vtype, atype]) if (!MediaSource.isTypeSupported(t)) throw new Error('unsupported ' + t);
-  const [vbuf, abuf] = await Promise.all([
-    fetch(vfile).then((r) => r.arrayBuffer()),
-    fetch(afile).then((r) => r.arrayBuffer()),
-  ]);
-  const ms = new MediaSource();
-  v.src = URL.createObjectURL(ms);
-  await new Promise((res, rej) => { ms.addEventListener('sourceopen', res, { once: true }); setTimeout(() => rej(new Error('sourceopen timeout')), 12000); });
-  const append = (sb, buf) => new Promise((res, rej) => {
-    sb.addEventListener('updateend', res, { once: true });
-    sb.addEventListener('error', () => rej(new Error('append error')), { once: true });
-    sb.appendBuffer(buf);
-  });
-  const vsb = ms.addSourceBuffer(vtype);
-  const asb = ms.addSourceBuffer(atype);
-  await append(vsb, vbuf);
-  await append(asb, abuf);
-  if (ms.readyState === 'open') ms.endOfStream();
-  await new Promise((res, rej) => {
-    if (v.readyState >= 2) return res();
-    v.addEventListener('loadeddata', res, { once: true });
-    v.addEventListener('error', () => rej(new Error('media ' + (v.error && v.error.code))), { once: true });
-    setTimeout(() => rej(new Error('load timeout rs=' + v.readyState)), 20000);
-  });
-}
-
-// Warm seek while playing. Metrics match the reporter's bug-2050845 harness:
-//   seeked     - time to the 'seeked' event
-//   firstFrame - time to the first presented frame at/after the target (rVFC)
-//   futureData - time to (!seeking && readyState >= HAVE_FUTURE_DATA)
-//   waiting    - time to the first 'waiting' event (stall onset; null = no stall)
-//   resumed    - time until the timeline actually advances past target by
-//                RESUME_MARGIN while not paused/seeking and HAVE_FUTURE_DATA
-function measureSeek(v, target) {
+function measureOne(v, target, delta) {
   return new Promise((resolve) => {
-    const res = { seeked: null, firstFrame: null, futureData: null, waiting: null, resumed: null };
+    const res = { firstFrame: null, seeked: null, waiting: null, futureData: null, playing: null, resumed: null, actual: null };
+    let done = false;
+    let graceTimer = null;
+    let capTimer = null;
+    let readyTimer = null;
     const t0 = performance.now();
-    let done = false, iv = 0, cap = 0;
-    const onWaiting = () => { if (res.waiting === null) res.waiting = performance.now() - t0; };
     const finish = () => {
       if (done) return;
-      done = true; clearInterval(iv); clearTimeout(cap);
-      v.removeEventListener('waiting', onWaiting); resolve(res);
+      done = true;
+      clearTimeout(graceTimer);
+      clearTimeout(capTimer);
+      clearInterval(readyTimer);
+      v.removeEventListener('waiting', onWaiting);
+      v.removeEventListener('playing', onPlaying);
+      v.removeEventListener('canplay', markReadiness);
+      v.removeEventListener('timeupdate', markReadiness);
+      v.removeEventListener('seeked', markReadiness);
+      resolve(res);
     };
-    v.addEventListener('seeked', () => { if (res.seeked === null) res.seeked = performance.now() - t0; }, { once: true });
-    v.addEventListener('waiting', onWaiting);
-    // requestVideoFrameCallback is paused for background/occluded windows, so
-    // firstFrame is best-effort; futureData/resumed use a timer so they work
-    // without the window being focused.
+    const maybeFinish = () => {
+      if (res.seeked !== null && res.firstFrame !== null && res.resumed !== null) finish();
+    };
+    const markReadiness = () => {
+      const now = performance.now() - t0;
+      if (res.futureData === null && !v.seeking && v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+        res.futureData = now;
+      }
+      if (
+        res.resumed === null &&
+        !v.paused &&
+        !v.seeking &&
+        v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA &&
+        v.currentTime >= target + PLAYBACK_ADVANCE_S
+      ) {
+        res.resumed = now;
+        res.resumedTime = v.currentTime;
+        maybeFinish();
+      }
+    };
+    const onWaiting = () => { if (res.waiting === null) res.waiting = performance.now() - t0; };
+    const onPlaying = () => {
+      if (res.playing === null) res.playing = performance.now() - t0;
+      markReadiness();
+    };
+    v.addEventListener('waiting', onWaiting, { once: true });
+    v.addEventListener('playing', onPlaying, { once: true });
+    v.addEventListener('canplay', markReadiness);
+    v.addEventListener('timeupdate', markReadiness);
+    v.addEventListener('seeked', markReadiness);
+    v.addEventListener('seeked', () => {
+      res.seeked = performance.now() - t0;
+      res.actual = v.currentTime;
+      // Give the compositor time to actually present the target frame before
+      // giving up on firstFrame; finish at once if it is already captured.
+      if (res.firstFrame !== null) {
+        maybeFinish();
+      } else {
+        graceTimer = setTimeout(maybeFinish, FF_GRACE_MS);
+      }
+    }, { once: true });
     const onFrame = (now, meta) => {
-      if (res.firstFrame === null && meta.mediaTime >= target - 0.001) res.firstFrame = performance.now() - t0;
+      if (done) return;
+      const targetFrame = delta > 0 ? meta.mediaTime >= target - 0.001 : meta.mediaTime <= target + 0.001;
+      if (targetFrame) {
+        if (res.firstFrame === null) res.firstFrame = performance.now() - t0;
+        maybeFinish();
+        return;
+      }
       if (!done) v.requestVideoFrameCallback(onFrame);
     };
     if ('requestVideoFrameCallback' in v) v.requestVideoFrameCallback(onFrame);
-    // Poll via setInterval (timers keep running in the background).
-    iv = setInterval(() => {
-      const ready = !v.seeking && v.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
-      if (res.futureData === null && ready) res.futureData = performance.now() - t0;
-      if (res.resumed === null && !v.paused && ready && v.currentTime >= target + RESUME_MARGIN) {
-        res.resumed = performance.now() - t0;
-      }
-      if (res.resumed !== null && res.firstFrame !== null) finish();
-    }, 15);
-    cap = setTimeout(finish, MEASURE_CAP_MS);
     v.currentTime = target;
+    readyTimer = setInterval(markReadiness, READY_POLL_MS);
+    capTimer = setTimeout(finish, MEASURE_CAP_MS);
   });
 }
 
 async function seekTo(v, t) {
-  await new Promise((r) => { let d = 0; const f = () => { if (!d) { d = 1; r(); } }; v.addEventListener('seeked', f, { once: true }); v.currentTime = t; setTimeout(f, 5000); });
+  await new Promise((r) => {
+    let done = false;
+    const fin = () => { if (!done) { done = true; r(); } };
+    v.addEventListener('seeked', fin, { once: true });
+    v.currentTime = t;
+    setTimeout(fin, 5000);
+  });
 }
 
-async function runConfig(cfg, iters) {
+// mode: 'playback' (video kept playing) or 'dormant' (paused + waited to dormancy)
+async function runDirection(v, mode, base, delta, iters, label) {
+  const rows = [];
+  for (let i = 0; i < iters; i++) {
+    const from = delta > 0 ? base : base + Math.abs(delta);
+    if (mode === 'playback') {
+      if (v.paused) { await v.play().catch(() => {}); }
+      await seekTo(v, from);
+      await sleep(80);
+    } else {
+      v.pause();
+      await seekTo(v, from);
+      setStatus(`${label} — waiting for dormancy (${(dormantWaitMs / 1000).toFixed(1)}s), iter ${i + 1}/${iters}`);
+      await sleep(dormantWaitMs); // wait past the dormant-on-pause timeout to release the decoder
+    }
+    setStatus(`${label} — measuring seek, iter ${i + 1}/${iters}`);
+    rows.push(await measureOne(v, from + delta, delta));
+    progDone++;
+    setProgress();
+  }
+  return {
+    n: rows.length,
+    firstFrame: median(rows.map((r) => r.firstFrame)),
+    seeked: median(rows.map((r) => r.seeked)),
+    futureData: median(rows.map((r) => r.futureData)),
+    playing: median(rows.map((r) => r.playing)),
+    resumed: median(rows.map((r) => r.resumed)),
+    waiting: median(rows.map((r) => r.waiting)),
+    raw: rows,
+  };
+}
+
+// Progressive load: assign video.src directly and wait for loadeddata.
+async function loadSrc(v, file) {
+  v.removeAttribute('src');
+  v.load();
+  v.src = file;
+  await new Promise((res, rej) => {
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('media error code=' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout, readyState=' + v.readyState)), 20000);
+  });
+}
+
+function supportedType(file) {
+  const type = (MSE_TYPES[file] || []).find((c) => MediaSource.isTypeSupported(c));
+  if (!type) throw new Error('no supported MSE type for ' + file);
+  return type;
+}
+
+async function fetchBuffer(file) {
+  const res = await fetch(file);
+  if (!res.ok) throw new Error('fetch failed for ' + file + ': ' + res.status);
+  return res.arrayBuffer();
+}
+
+function appendBuffer(sb, buf) {
+  return new Promise((res, rej) => {
+    sb.addEventListener('updateend', res, { once: true });
+    sb.addEventListener('error', () => rej(new Error('appendBuffer error')), { once: true });
+    sb.appendBuffer(buf);
+  });
+}
+
+// MSE load: append video and audio into separate SourceBuffers, then end the
+// stream so the full timeline is seekable. Returns the chosen MSE type strings.
+async function loadMse(v, videoFile, audioFile) {
+  if (!('MediaSource' in window)) throw new Error('no MediaSource');
+  v.removeAttribute('src');
+  v.load();
+  const videoType = supportedType(videoFile);
+  const audioType = supportedType(audioFile);
+  const [videoBuf, audioBuf] = await Promise.all([fetchBuffer(videoFile), fetchBuffer(audioFile)]);
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  await new Promise((res, rej) => {
+    ms.addEventListener('sourceopen', res, { once: true });
+    setTimeout(() => rej(new Error('sourceopen timeout')), 12000);
+  });
+  const videoSb = ms.addSourceBuffer(videoType);
+  const audioSb = ms.addSourceBuffer(audioType);
+  await Promise.all([appendBuffer(videoSb, videoBuf), appendBuffer(audioSb, audioBuf)]);
+  if (ms.readyState === 'open') ms.endOfStream();
+  await new Promise((res, rej) => {
+    if (v.readyState >= 2) return res();
+    v.addEventListener('loadeddata', res, { once: true });
+    v.addEventListener('error', () => rej(new Error('media error code=' + (v.error && v.error.code))), { once: true });
+    setTimeout(() => rej(new Error('load timeout, readyState=' + v.readyState)), 20000);
+  });
+  return { videoType, audioType };
+}
+
+// Runs the warm/cold seek loop for one (codec, pipeline) combination and returns
+// a flat result entry carrying a `pipeline` field. On load failure it returns an
+// entry with supported:false and an error message so the caller can continue.
+async function runCodec(codec, pipeline, cfg) {
   const v = $('v');
-  const out = { codec: cfg.codec, pipeline: cfg.pipeline, muted: cfg.muted, supported: true };
+  const out = { codec: codec.key, label: codec.label, pipeline, supported: true, dormant: cfg.dormant };
   try {
-    const C = CODECS[cfg.codec];
-    setStatus(`loading ${cfg.codec}/${cfg.pipeline}/${cfg.muted ? 'muted' : 'audible'} ...`);
-    if (cfg.pipeline === 'src') await loadSrc(v, C.src, cfg.muted);
-    else await loadMse(v, C.vfile, C.vtype, AUDIO.afile(cfg.codec), AUDIO.atype, cfg.muted);
-    // play() may stall if the audio device can't initialize (e.g. headless/no
-    // audio output) — bound it so one config can't hang the whole matrix.
-    await Promise.race([v.play(), sleep(6000).then(() => { throw new Error('play() stalled (no audio device?)'); })]);
-    await seekTo(v, 5); await sleep(200);
-    const rows = [];
-    const early = 8.0, late = 18.0; // ~10s apart (matches the reporter harness) so
-                                    // the audio-sink penalty isn't masked by a
-                                    // decode-heavy long seek
-    for (let i = 0; i < iters; i++) {
-      const target = i % 2 === 0 ? late : early;
-      if (v.paused) await v.play().catch(() => {});
-      setStatus(`${cfg.codec}/${cfg.pipeline}/${cfg.muted ? 'muted' : 'audible'} seek ${i + 1}/${iters}`);
-      rows.push(await measureSeek(v, target));
-      await sleep(120);
+    setStatus(`loading ${codec.label} (${pipeline}) ...`);
+    if (pipeline === 'mse') Object.assign(out, await loadMse(v, codec.mseVideoFile, codec.mseAudioFile));
+    else await loadSrc(v, codec.srcFile);
+    v.muted = cfg.muted;
+    v.volume = cfg.muted ? 0 : 1;
+    out.duration = v.duration;
+    const modes = cfg.dormant ? ['playback', 'dormant'] : ['playback'];
+    for (const mode of modes) {
+      const iters = mode === 'playback' ? cfg.pIters : cfg.dIters;
+      out[mode] = {
+        forward: await runDirection(v, mode, 5, 10, iters, `${codec.label} / ${pipeline} / ${mode} / +10 s`),
+        backward: await runDirection(v, mode, 5, -10, iters, `${codec.label} / ${pipeline} / ${mode} / -10 s`),
+      };
     }
     v.pause();
-    out.n = rows.length;
-    out.seeked = median(rows.map((r) => r.seeked));
-    out.firstFrame = median(rows.map((r) => r.firstFrame));
-    out.futureData = median(rows.map((r) => r.futureData));
-    out.resumed = median(rows.map((r) => r.resumed));
-    out.waiting = median(rows.map((r) => r.waiting));
-    out.raw = rows;
-  } catch (e) { out.supported = false; out.error = String(e); }
+  } catch (e) {
+    out.supported = false;
+    out.error = e.message;
+  }
   return out;
 }
 
-function setStatus(s) { $('status').textContent = s; }
-const fmt = (x) => (x == null ? '<span class="na">n/a</span>' : x.toFixed(1));
+function fmt(x) { return x === null || x === undefined ? '<span class="na">n/a</span>' : x.toFixed(1); }
 
-function render(all) {
-  const byCodec = {};
-  for (const r of all) (byCodec[r.codec] ||= []).push(r);
-  $('tables').innerHTML = '';
-  for (const codec of Object.keys(byCodec)) {
-    const t = document.createElement('table');
-    let rows = '';
-    for (const r of byCodec[codec]) {
-      rows += r.supported
-        ? `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td class="num">${fmt(r.seeked)}</td><td class="num">${fmt(r.firstFrame)}</td><td class="num">${fmt(r.futureData)}</td><td class="num">${fmt(r.resumed)}</td><td class="num">${fmt(r.waiting)}</td></tr>`
-        : `<tr><td>${r.pipeline}</td><td>${r.muted ? 'muted' : 'audible'}</td><td colspan=5 class="na">${r.error}</td></tr>`;
-    }
-    t.innerHTML = `<caption>${codec.toUpperCase()} — median ms</caption>
-      <tr><th>pipeline</th><th>audio</th><th>seeked</th><th>firstFrame</th><th>futureData</th><th>resumed</th><th>waiting</th></tr>${rows}`;
-    $('tables').appendChild(t);
+function renderCodec(out) {
+  const tag = out.pipeline === 'mse' ? 'MSE' : 'src';
+  const h = document.createElement('h2');
+  h.textContent = `${out.label} (${tag})` + (out.supported ? '' : ' — UNSUPPORTED (' + out.error + ')');
+  $('tables').appendChild(h);
+  if (!out.supported) return;
+  const cell = (s, dir) => out[s] && out[s][dir]
+    ? `<td class="num">${fmt(out[s][dir].seeked)}</td><td class="num">${fmt(out[s][dir].firstFrame)}</td><td class="num">${fmt(out[s][dir].futureData)}</td><td class="num">${fmt(out[s][dir].resumed)}</td><td class="num">${fmt(out[s][dir].waiting)}</td>`
+    : '<td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td><td class="na">n/a</td>';
+  const rows = [
+    `<tr><td>playback</td><td>+10 s</td>${cell('playback', 'forward')}</tr>`,
+    `<tr><td>playback</td><td>-10 s</td>${cell('playback', 'backward')}</tr>`,
+  ];
+  if (out.dormant) {
+    rows.push(
+      `<tr><td>dormant</td><td>+10 s</td>${cell('dormant', 'forward')}</tr>`,
+      `<tr><td>dormant</td><td>-10 s</td>${cell('dormant', 'backward')}</tr>`
+    );
   }
+  const typeNote = out.pipeline === 'mse' && out.videoType
+    ? ', ' + out.videoType.replace('video/', '') + ' + ' + out.audioType.replace('audio/', '')
+    : '';
+  const t = document.createElement('table');
+  t.innerHTML = `<caption>${out.label} (${tag}${typeNote}) — median ms</caption>
+    <tr><th>state</th><th>seek</th><th>seeked</th><th>firstFrame</th><th>futureData</th><th>resumed</th><th>waiting</th></tr>
+    ${rows.join('')}`;
+  $('tables').appendChild(t);
 }
 
-async function runAll() {
-  $('run').disabled = true;
-  const iters = parseInt($('pIters').value, 10) || 10;
-  const result = { ua: navigator.userAgent, configs: [] };
-  const qp2 = new URLSearchParams(location.search);
-  const onlyAudio = qp2.get('audio'); // 'muted' | 'audible' | null(both)
-  const onlyCodec = qp2.get('codec'); // 'av1' | 'h264' | null
-  const onlyPipe = qp2.get('pipeline'); // 'src' | 'mse' | null
-  const configs = CONFIGS.filter((c) =>
-    (!onlyCodec || c.codec === onlyCodec) &&
-    (!onlyPipe || c.pipeline === onlyPipe) &&
-    (!onlyAudio || (onlyAudio === 'muted') === c.muted));
-  for (const cfg of configs) {
-    const out = await runConfig(cfg, iters);
-    result.configs.push(out);
-    render(result.configs);
+function flattenResults(result) {
+  const rows = [];
+  for (const out of result.codecs) {
+    if (!out.supported) continue;
+    for (const mode of ['playback', 'dormant']) {
+      if (!out[mode]) continue;
+      for (const [direction, bucket] of [['+10', out[mode].forward], ['-10', out[mode].backward]]) {
+        bucket.raw.forEach((row, i) => rows.push({
+          ...row,
+          codec: out.codec,
+          pipeline: out.pipeline,
+          mode,
+          direction,
+          iteration: i + 1,
+          muted: result.cfg.muted,
+          firstFrameAfterTargetMs: row.firstFrame,
+          seekedMs: row.seeked,
+          futureDataMs: row.futureData,
+          playingMs: row.playing,
+          resumedMs: row.resumed,
+          waitingMs: row.waiting,
+        }));
+      }
+    }
   }
-  setStatus('done');
+  return rows;
+}
+
+async function runAll(overrides = {}) {
+  $('run').disabled = true;
+  $('tables').innerHTML = '';
+  const cfg = {
+    pIters: overrides.pIters || overrides.iterations || parseInt($('pIters').value, 10) || 12,
+    dIters: overrides.dIters || parseInt($('dIters').value, 10) || 6,
+    dormant: overrides.dormant ?? $('doDormant').checked,
+    muted: overrides.muted ?? $('muted').checked,
+    pipelines: overrides.pipelines || PIPELINES,
+    codecs: overrides.codecs || CODECS.map((codec) => codec.key),
+  };
+  // Total measured seeks: each (codec, pipeline) runs playback (fwd+back), plus
+  // dormant (fwd+back) only when the cold seeks are enabled. Drives the bar.
+  progDone = 0;
+  const selectedCodecs = CODECS.filter((codec) => cfg.codecs.includes(codec.key));
+  progTotal = selectedCodecs.length * cfg.pipelines.length *
+    (cfg.pIters * 2 + (cfg.dormant ? cfg.dIters * 2 : 0));
+  setProgress();
+  const result = { title: document.title, ua: navigator.userAgent, cfg, codecs: [] };
+  try {
+    for (const codec of selectedCodecs) {
+      for (const pipeline of cfg.pipelines) {
+        const out = await runCodec(codec, pipeline, cfg);
+        result.codecs.push(out);
+        renderCodec(out);
+      }
+    }
+    progDone = progTotal;
+    setProgress();
+    setStatus('done');
+  } catch (e) {
+    result.error = e.message;
+    setStatus('ERROR: ' + e.message);
+  }
+  result.results = flattenResults(result);
   $('out').textContent = JSON.stringify(result, null, 2);
   $('run').disabled = false;
-  try { await fetch('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) }); } catch (e) {}
+  // best-effort POST for automated harnesses; ignored when served by a plain file server
+  try {
+    await fetch('/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+  } catch (e) {}
   document.title = 'DONE';
+  return result;
 }
 
 $('run').addEventListener('click', runAll);
 const qp = new URLSearchParams(location.search);
 if (qp.get('pIters')) $('pIters').value = qp.get('pIters');
-if (qp.get('auto') === '1') runAll();
+if (qp.get('dIters')) $('dIters').value = qp.get('dIters');
+if (qp.get('muted') === '1') $('muted').checked = true;
+// Cold (dormant) seeks are off by default; ?dormant=1 opts in (used by automation).
+if (qp.get('dormant') === '1') $('doDormant').checked = true;
+// ?dWait= is an automation-only override (e.g. when a shorter dormant timeout
+// is set via prefs); there is intentionally no UI control for it.
+if (qp.get('dWait')) dormantWaitMs = parseInt(qp.get('dWait'), 10) || dormantWaitMs;
+if (qp.get('auto') === '1') {
+  runAll({
+    pipelines: qp.get('pipeline') ? [qp.get('pipeline')] : undefined,
+    codecs: qp.get('codec') ? [qp.get('codec')] : undefined,
+  });
+}
+window.runAudioSeek = (cfg = {}) => runAll(cfg);
 </script>
 </body>
 </html>
