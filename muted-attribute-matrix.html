@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>muted: attached vs detached</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 1.5rem; color: #111; }
+  h1 { font-size: 1.15rem; }
+  .ua { padding: .4rem .6rem; background: #eef; border: 1px solid #ccd; border-radius: 6px; display: inline-block; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  th, td { border: 1px solid #ccc; padding: .4rem .6rem; text-align: left; }
+  th { background: #f4f4f4; }
+  td.recipe { font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre; }
+  .yes { color: #0a0; font-weight: 700; }
+  .no  { color: #c00; font-weight: 700; }
+</style>
+
+<h1><code>video.muted</code> after applying the muted content attribute &mdash; attached vs detached</h1>
+<p class="ua" id="ua"></p>
+<p>Each row applies the muted attribute a different way, then reads <code>el.muted</code> once with the element <b>detached</b> (never inserted) and once <b>attached</b> (inserted into the document). Result cells are <span class="yes">green when they match the spec</span> and <span class="no">red when they violate it</span>. Per spec, attachment is irrelevant &mdash; the two result columns should always equal the Expected column.</p>
+
+<table id="out">
+  <thead><tr><th>#</th><th>Recipe</th><th>Expected<br>(spec)</th><th>muted<br>(detached)</th><th>muted<br>(attached)</th><th>Why (spec)</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+document.getElementById('ua').textContent = navigator.userAgent;
+
+// mount(el) inserts el into the document only for the "attached" run.
+// spec = expected el.muted per https://html.spec.whatwg.org/multipage/media.html#concept-media-muted
+//   muted iff: state is true; OR state is "default" AND has muted content attribute.
+//   Only the IDL setter (el.muted=x) changes the state; setAttribute does not. Attachment is irrelevant.
+const RECIPES = [
+  { name: "mount(el);  el.setAttribute('muted','')", spec: true,
+    why: "state stays \"default\", attribute present → muted (condition 2)",
+    run: (m) => { const e = document.createElement('video'); m(e); e.setAttribute('muted',''); return e; } },
+  { name: "el.setAttribute('muted','');  mount(el)", spec: true,
+    why: "same as #1; insertion order does not matter to the spec",
+    run: (m) => { const e = document.createElement('video'); e.setAttribute('muted',''); m(e); return e; } },
+  { name: "mount(el);  el.muted = true", spec: true,
+    why: "setter sets state = true → muted (condition 1)",
+    run: (m) => { const e = document.createElement('video'); m(e); e.muted = true; return e; } },
+  { name: "mount(el);  el.muted=false;  el.setAttribute('muted','')", spec: false,
+    why: "setter latched state = false; attribute no longer applies → not muted",
+    run: (m) => { const e = document.createElement('video'); m(e); e.muted = false; e.setAttribute('muted',''); return e; } },
+  { name: "mount(el);  el.setAttribute('muted','');  el.removeAttribute('muted')", spec: false,
+    why: "state \"default\", no attribute at the end → not muted",
+    run: (m) => { const e = document.createElement('video'); m(e); e.setAttribute('muted',''); e.removeAttribute('muted'); return e; } },
+  { name: "innerHTML '<video muted>';  mount(el)", spec: true,
+    why: "state \"default\", attribute present → muted (condition 2)",
+    run: (m) => { const d = document.createElement('div'); d.innerHTML = '<video muted></video>'; const e = d.firstChild; m(e); return e; } },
+];
+
+const live = [];
+const tbody = document.querySelector('#out tbody');
+
+function read(recipe, attached) {
+  const mount = (el) => { if (attached) { document.body.appendChild(el); live.push(el); } };
+  try { return recipe.run(mount).muted; } catch (e) { return 'err: ' + e.message; }
+}
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function resultCell(v, spec) {
+  if (typeof v !== 'boolean') return '<td>' + esc(String(v)) + '</td>';
+  return '<td class="' + (v === spec ? 'yes' : 'no') + '">' + v + '</td>';
+}
+
+RECIPES.forEach((rc, i) => {
+  const det = read(rc, false);
+  const att = read(rc, true);
+  const tr = document.createElement('tr');
+  tr.innerHTML = '<td>' + (i + 1) + '</td>'
+    + '<td class="recipe">' + esc(rc.name) + '</td>'
+    + '<td><b>' + rc.spec + '</b></td>'
+    + resultCell(det, rc.spec) + resultCell(att, rc.spec)
+    + '<td style="font-size:12px;color:#555">' + esc(rc.why) + '</td>';
+  tbody.appendChild(tr);
+});
+while (live.length) live.pop().remove();
+</script>
