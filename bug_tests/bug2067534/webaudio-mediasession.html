@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Web Audio + Media Session activation (bug 2067534)</title>
+<style>
+  body { font: 14px/1.45 system-ui, sans-serif; margin: 1.5rem; color: #111; }
+  h1 { font-size: 1.2rem; }
+  .ua { padding: .4rem .6rem; background: #eef; border: 1px solid #ccd; border-radius: 6px; display: inline-block; }
+  .bar { position: sticky; top: 0; background: #fff; padding: .5rem 0; border-bottom: 1px solid #ddd; z-index: 1; }
+  .bar button { font-size: 14px; }
+  #now { margin-left: .8rem; font-weight: 600; }
+  table { border-collapse: collapse; margin-top: .8rem; width: 100%; }
+  th, td { border: 1px solid #ccc; padding: .3rem .5rem; text-align: left; vertical-align: top; }
+  th { background: #f4f4f4; position: sticky; top: 2.6rem; }
+  th.me, td.me { background: #fffbe6; min-width: 11rem; }
+  td.setup { font-size: 12px; color: #444; max-width: 22rem; }
+  tr.running td { background: #fff3c4; }
+  tr.running td.me { background: #ffe58a; }
+  .yes { color: #0a0; font-weight: 700; }
+  .no { color: #c00; font-weight: 700; }
+  .pred { font-style: italic; opacity: .75; }
+  .pred::after { content: "*"; }
+  .check { color: #1d4ed8; font-weight: 700; }
+  .events { font-size: 12px; color: #555; }
+  #log { white-space: pre-wrap; font: 12px ui-monospace, Menlo, monospace; background: #f6f6f6; padding: .5rem; max-height: 14rem; overflow: auto; }
+  code { background: #f0f0f0; padding: 0 3px; }
+  .small { font-size: 12px; color: #555; }
+</style>
+</head>
+<body>
+<h1>Does Web Audio activate the platform media controls? (bug 2067534)</h1>
+<p class="ua" id="ua"></p>
+
+<p>Each row plays audio <b>only through the Web Audio API</b> (no media element) and configures
+<code>navigator.mediaSession</code> / <code>navigator.audioSession</code> differently. Click <b>Run</b> on a row:
+the previous scenario stops and the new one starts. At each checkpoint, answer whether the platform media
+controls show this page.</p>
+<ul class="small">
+  <li><b>Chrome:</b> "hub" is Global Media Controls (toolbar media button, or <code>chrome://media-internals</code> Audio Focus tab shows <code>Controllable</code>). "OS" is the system overlay (macOS Now Playing / Control Center, Windows media flyout, Linux MPRIS).</li>
+  <li><b>Safari / Firefox:</b> the system overlay.</li>
+  <li>For "after PAUSE" checkpoints, press pause in the platform controls. If none are shown, use <b>Simulate pause</b>, which runs the page's pause handler code. Real presses that reach the page are listed under the scenario.</li>
+  <li>Cells marked <span class="pred">italic</span> are predicted from source code, not measured. Each run uses a fresh hidden same-origin iframe, so no Media Session state carries over between scenarios.</li>
+</ul>
+
+<div class="bar">
+  <button id="stop">Stop</button>
+  <button id="copy">Copy this browser's results (Markdown)</button>
+  <button id="clear">Clear this browser's results</button>
+  <span id="now">Idle</span>
+</div>
+
+<table id="matrix">
+  <thead>
+    <tr>
+      <th>#</th><th>Scenario</th><th>Checkpoint</th>
+      <th>Chrome hub</th><th>Chrome OS</th><th>Safari</th><th>Firefox</th><th>Firefox + D322227</th>
+      <th class="me">This browser</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<p class="small" id="sources"></p>
+
+<h3>Log</h3>
+<div id="log"></div>
+
+<script>
+"use strict";
+
+const TONE_GAIN = 0.05;
+const STORE = "bug2067534-webaudio-mediasession-v2";
+
+// Known results. Keys: hub/os = Chrome, safari, firefox, patch = Firefox with
+// D322227. A value ending in "*" is predicted from source, not measured.
+const SOURCES = {
+  chrome: "Chrome 153.0.8010.54, macOS, stock profile, measured 2026-09-24 (hub via chrome://media-internals, OS via macOS Now Playing).",
+  safari: "Safari 26.6.2: predicted from WebKit source (Now Playing needs navigator.audioSession.type \"playback\").",
+  firefox: "Firefox Nightly 158.0a1 without D322227, macOS, fresh profile, measured 2026-09-24 via macOS Now Playing.",
+  patch: "Firefox + D322227: predicted from the patch summary.",
+};
+
+const SCENARIOS = [
+  { id: "control-audio-element", name: "Control: <audio> element",
+    setup: "Not Web Audio. A looping <audio> element (generated tone) + metadata + handlers + \"playing\". Checks that the platform controls can be observed at all.",
+    run(t) { t.metadata(); t.handlers(); t.state("playing"); t.audioElement(); },
+    cps: [{ at: 2000, q: "2 s", hub: "Yes", os: "Yes", safari: "Yes*", firefox: "Yes", patch: "Yes*" }] },
+  { id: "no-ms", name: "No Media Session",
+    setup: "Audible tone. navigator.mediaSession not configured.",
+    run(t) { t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "metadata-only", name: "Metadata only",
+    setup: "Audible tone + metadata. playbackState \"none\". No handlers.",
+    run(t) { t.metadata(); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "handlers-no-state", name: "Handlers, no playbackState",
+    setup: "Audible tone + metadata + play/pause handlers. playbackState \"none\".",
+    run(t) { t.metadata(); t.handlers(); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "playing-no-handlers", name: "\"playing\", no handlers",
+    setup: "Metadata + playbackState \"playing\" set before the tone starts. No handlers.",
+    run(t) { t.metadata(); t.state("playing"); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "Yes", os: "No", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "playing-handlers", name: "\"playing\" + handlers, pause = silence",
+    setup: "Metadata + handlers + \"playing\". The pause handler sets \"paused\" and mutes the gain; the context keeps running.",
+    run(t) { t.metadata(); t.handlers({ pause: "silence" }); t.state("playing"); t.tone(); },
+    cps: [
+      { at: 2000, q: "2 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+      { after: "pause", delay: 4000, q: "4 s after PAUSE", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "pause-suspend", name: "\"playing\" + handlers, pause = suspend()",
+    setup: "Same as above, but the pause handler calls ctx.suspend().",
+    run(t) { t.metadata(); t.handlers({ pause: "suspend" }); t.state("playing"); t.tone(); },
+    cps: [
+      { at: 2000, q: "2 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+      { after: "pause", delay: 500, q: "Right after PAUSE", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "paused-state", name: "\"paused\" while audible",
+    setup: "Audible tone + metadata + handlers. playbackState \"paused\".",
+    run(t) { t.metadata(); t.handlers(); t.state("paused"); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "silent-graph", name: "Running but silent graph",
+    setup: "Oscillator through gain 0. Metadata + handlers + \"playing\".",
+    run(t) { t.metadata(); t.handlers(); t.state("playing"); t.tone(0); },
+    cps: [{ at: 3000, q: "3 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" }] },
+  { id: "late-state", name: "\"playing\" set late, with handlers",
+    setup: "Tone + metadata + handlers first. playbackState \"playing\" set at 4 s.",
+    run(t) { t.metadata(); t.handlers(); t.tone(); t.later(4000, () => t.state("playing")); },
+    cps: [
+      { at: 3000, q: "3 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" },
+      { at: 6000, q: "6 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "late-state-no-handlers", name: "\"playing\" set late, no handlers",
+    setup: "Tone + metadata first, no handlers. playbackState \"playing\" set at 4 s.",
+    run(t) { t.metadata(); t.tone(); t.later(4000, () => t.state("playing")); },
+    cps: [
+      { at: 3000, q: "3 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "No*" },
+      { at: 6000, q: "6 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "No*" },
+    ] },
+  { id: "late-handlers", name: "Handlers added late",
+    setup: "Tone + metadata + \"playing\" first. play/pause handlers set at 4 s.",
+    run(t) { t.metadata(); t.state("playing"); t.tone(); t.later(4000, () => t.handlers()); },
+    cps: [
+      { at: 3000, q: "3 s", hub: "Yes", os: "No", safari: "No*", firefox: "No", patch: "No*" },
+      { at: 6000, q: "6 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "reset-none", name: "playbackState back to \"none\"",
+    setup: "Metadata + handlers + \"playing\"; at 4 s playbackState is set to \"none\" while the tone continues.",
+    run(t) { t.metadata(); t.handlers(); t.state("playing"); t.tone(); t.later(4000, () => t.state("none")); },
+    cps: [
+      { at: 3000, q: "3 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+      { at: 6000, q: "6 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "?" },
+    ] },
+  { id: "gap-1s", name: "1 s silence gap",
+    setup: "Metadata + handlers + \"playing\"; gain 0 from 4 s to 5 s, then back.",
+    run(t) {
+      t.metadata(); t.handlers(); t.state("playing"); t.tone();
+      t.later(4000, () => t.gain(0)); t.later(5000, () => t.gain(TONE_GAIN));
+    },
+    cps: [
+      { at: 4600, q: "During the gap", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+      { at: 7000, q: "7 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "long-silence", name: "Long silence, still \"playing\"",
+    setup: "Metadata + handlers + \"playing\"; gain 0 for good from 4 s.",
+    run(t) { t.metadata(); t.handlers(); t.state("playing"); t.tone(); t.later(4000, () => t.gain(0)); },
+    cps: [
+      { at: 3000, q: "3 s", hub: "Yes", os: "Yes", safari: "No*", firefox: "No", patch: "Yes*" },
+      { at: 9000, q: "9 s (5 s silent)", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "audiosession-only", name: "audioSession \"playback\" only",
+    setup: "navigator.audioSession.type = \"playback\" (if supported) + audible tone. No mediaSession configuration.",
+    run(t) { t.audioSession("playback"); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "No", os: "No", safari: "Yes*", firefox: "No", patch: "No*" }] },
+  { id: "audiosession-full", name: "audioSession \"playback\" + \"playing\" + handlers",
+    setup: "audioSession \"playback\" + metadata + handlers + \"playing\" + audible tone.",
+    run(t) { t.audioSession("playback"); t.metadata(); t.handlers(); t.state("playing"); t.tone(); },
+    cps: [{ at: 2000, q: "2 s", hub: "Yes", os: "Yes", safari: "Yes*", firefox: "No", patch: "Yes*" }] },
+  { id: "audiosession-silence", name: "audioSession \"playback\", then long silence",
+    setup: "As above; gain 0 for good from 4 s, context keeps running.",
+    run(t) {
+      t.audioSession("playback"); t.metadata(); t.handlers(); t.state("playing"); t.tone();
+      t.later(4000, () => t.gain(0));
+    },
+    cps: [
+      { at: 3000, q: "3 s", hub: "Yes", os: "Yes", safari: "Yes*", firefox: "No", patch: "Yes*" },
+      { at: 9000, q: "9 s (5 s silent)", hub: "No", os: "No", safari: "Yes*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "audiosession-suspend", name: "audioSession \"playback\", script suspend()",
+    setup: "As above; at 4 s the page calls ctx.suspend() and sets \"paused\".",
+    run(t) {
+      t.audioSession("playback"); t.metadata(); t.handlers(); t.state("playing"); t.tone();
+      t.later(4000, () => { t.ctx().suspend(); t.state("paused"); });
+    },
+    cps: [
+      { at: 3000, q: "3 s", hub: "Yes", os: "Yes", safari: "Yes*", firefox: "No", patch: "Yes*" },
+      { at: 5500, q: "5.5 s", hub: "No", os: "No", safari: "No*", firefox: "No", patch: "Yes*" },
+    ] },
+  { id: "muted-tab", name: "Muted tab",
+    setup: "Mute this tab first (tab context menu), then run. Metadata + handlers + \"playing\".",
+    run(t) { t.metadata(); t.handlers(); t.state("playing"); t.tone(); },
+    cps: [{ at: 3000, q: "3 s", hub: "No*", os: "No*", safari: "No*", firefox: "No", patch: "?" }] },
+];
+
+const $ = id => document.getElementById(id);
+function log(msg) {
+  const el = $("log");
+  el.textContent += `[${(performance.now() / 1000).toFixed(2)}s] ${msg}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+function loadResults() {
+  try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; }
+}
+let results = loadResults();
+function saveResults() { localStorage.setItem(STORE, JSON.stringify(results)); }
+
+// Currently running scenario: { scenario, ctx, gain, timers, cpState[], events[] }
+let run = null;
+
+// Returns a mono 16-bit WAV blob with a quiet 440 Hz tone.
+function toneWav(seconds) {
+  const rate = 44100, n = rate * seconds;
+  const buf = new DataView(new ArrayBuffer(44 + n * 2));
+  const str = (o, x) => [...x].forEach((c, i) => buf.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); buf.setUint32(4, 36 + n * 2, true); str(8, "WAVEfmt ");
+  buf.setUint32(16, 16, true); buf.setUint16(20, 1, true); buf.setUint16(22, 1, true);
+  buf.setUint32(24, rate, true); buf.setUint32(28, rate * 2, true); buf.setUint16(32, 2, true); buf.setUint16(34, 16, true);
+  str(36, "data"); buf.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) buf.setInt16(44 + i * 2, Math.sin(2 * Math.PI * 440 * i / rate) * 0.05 * 32767, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+// Each scenario runs in a fresh same-origin iframe so that no Media Session or
+// audio focus state carries over from the previous one. The parent document
+// never touches navigator.mediaSession itself.
+function freshFrame() {
+  const f = document.createElement("iframe");
+  f.hidden = true;
+  document.body.appendChild(f);
+  return f;
+}
+
+function stop() {
+  if (!run) return;
+  run.timers.forEach(clearTimeout);
+  if (run.ctx && run.ctx.state !== "closed") run.ctx.close();
+  if (run.media) run.media.pause();
+  run.frame.remove();
+  delete window.simulateAction;
+  log(`stopped ${run.scenario.id}`);
+  run = null;
+  $("now").textContent = "Idle";
+  render();
+}
+
+function harness(r) {
+  const w = r.frame.contentWindow;
+  const ms = w.navigator.mediaSession;
+  const t = {
+    ctx: () => r.ctx,
+    tone(level = TONE_GAIN) {
+      r.ctx = new w.AudioContext();
+      const osc = r.ctx.createOscillator();
+      r.gain = r.ctx.createGain();
+      r.gain.gain.value = level;
+      osc.frequency.value = 440;
+      osc.connect(r.gain).connect(r.ctx.destination);
+      osc.start();
+      log(`AudioContext started, gain ${level}, state ${r.ctx.state}`);
+    },
+    audioElement() {
+      const a = w.document.createElement("audio");
+      a.src = URL.createObjectURL(toneWav(3));
+      a.loop = true;
+      w.document.body.appendChild(a);
+      r.media = a;
+      a.play().then(() => log("<audio> playing"), e => log(`<audio> play() rejected: ${e.name}`));
+    },
+    gain(v) { r.gain.gain.setValueAtTime(v, r.ctx.currentTime); log(`gain -> ${v}`); },
+    metadata() {
+      ms.metadata = new w.MediaMetadata({ title: `Web Audio test: ${r.scenario.name}`, artist: "bug 2067534", album: r.scenario.id });
+      log("metadata set");
+    },
+    state(s) { ms.playbackState = s; log(`playbackState -> ${s}`); },
+    audioSession(type) {
+      if (!w.navigator.audioSession) { log("navigator.audioSession not supported"); return; }
+      w.navigator.audioSession.type = type;
+      log(`audioSession.type -> ${w.navigator.audioSession.type}`);
+    },
+    handlers(opts = {}) {
+      const play = source => {
+        action(r, "play", source);
+        if (r.media) { r.media.play(); t.state("playing"); return; }
+        if (r.ctx.state === "suspended") r.ctx.resume();
+        t.gain(TONE_GAIN);
+        t.state("playing");
+      };
+      const pause = source => {
+        action(r, "pause", source);
+        t.state("paused");
+        if (r.media) { r.media.pause(); return; }
+        if (opts.pause === "suspend") { r.ctx.suspend(); log("ctx.suspend()"); }
+        else t.gain(0);
+      };
+      ms.setActionHandler("play", () => play("platform"));
+      ms.setActionHandler("pause", () => pause("platform"));
+      window.simulateAction = a => ({ play, pause })[a]("simulated");
+      log("play/pause handlers set");
+    },
+    later(ms, fn) { r.timers.push(setTimeout(() => { if (run === r) fn(); }, ms)); },
+  };
+  return t;
+}
+
+// Records a handler call and releases checkpoints waiting on it.
+function action(r, name, source) {
+  r.events.push(`${name} (${source})`);
+  log(`action handler: ${name} (${source})`);
+  r.scenario.cps.forEach((cp, j) => {
+    if (cp.after === name && r.cpState[j] === "waiting-action") {
+      r.cpState[j] = "counting";
+      r.timers.push(setTimeout(() => { if (run === r) { r.cpState[j] = "check"; render(); } }, cp.delay));
+    }
+  });
+  render();
+}
+
+function start(id) {
+  stop();
+  const scenario = SCENARIOS.find(s => s.id === id);
+  const r = { scenario, frame: freshFrame(), ctx: null, gain: null, timers: [], events: [], cpState: [], t0: performance.now() };
+  run = r;
+  results[id] = { obs: [], events: r.events, ua: navigator.userAgent, date: new Date().toISOString() };
+  saveResults();
+  log(`start ${id}`);
+  scenario.run(harness(r));
+  scenario.cps.forEach((cp, j) => {
+    if (cp.after) {
+      r.cpState[j] = j === 0 ? "waiting-action" : "pending";
+    } else {
+      r.cpState[j] = "counting";
+      r.timers.push(setTimeout(() => { if (run === r) { r.cpState[j] = "check"; render(); } }, cp.at));
+    }
+  });
+  $("now").textContent = `Running: ${scenario.name}`;
+  render();
+}
+
+function answer(j, v) {
+  const r = run;
+  if (!r) return;
+  results[r.scenario.id].obs[j] = v;
+  results[r.scenario.id].events = r.events;
+  r.cpState[j] = "done";
+  const next = r.cpState.indexOf("pending");
+  if (next > 0 && r.cpState.slice(0, next).every(s => s === "done")) r.cpState[next] = "waiting-action";
+  saveResults();
+  log(`${r.scenario.id} checkpoint "${r.scenario.cps[j].q}": ${v}`);
+  if (r.cpState.every(s => s === "done")) stop();
+  else render();
+}
+
+function known(v) {
+  const span = document.createElement("span");
+  const pred = v.endsWith("*");
+  const text = pred ? v.slice(0, -1) : v;
+  span.textContent = text;
+  span.className = (text.startsWith("Yes") ? "yes" : text.startsWith("No") ? "no" : "") + (pred ? " pred" : "");
+  return span;
+}
+
+function meCell(s, cp, j) {
+  const td = document.createElement("td");
+  td.className = "me";
+  const saved = (results[s.id] || {}).obs || [];
+  const live = run && run.scenario === s ? run.cpState[j] : null;
+  if (live === "check") {
+    const label = document.createElement("span");
+    label.className = "check";
+    label.textContent = "Check now: shown? ";
+    td.appendChild(label);
+    for (const v of ["Yes", "No", "?"]) {
+      const b = document.createElement("button");
+      b.textContent = v;
+      b.dataset.answer = v;
+      b.onclick = () => answer(j, v);
+      td.appendChild(b);
+    }
+  } else if (live === "waiting-action") {
+    td.append("Press PAUSE in the platform controls, or ");
+    const b = document.createElement("button");
+    b.textContent = "Simulate pause";
+    b.dataset.simulate = cp.after;
+    b.disabled = !window.simulateAction;
+    b.onclick = () => window.simulateAction(cp.after);
+    td.appendChild(b);
+  } else if (live === "counting") {
+    td.textContent = "waiting...";
+  } else if (saved[j]) {
+    td.appendChild(known(saved[j]));
+  } else {
+    td.textContent = "";
+  }
+  return td;
+}
+
+function render() {
+  const tbody = document.querySelector("#matrix tbody");
+  tbody.textContent = "";
+  SCENARIOS.forEach((s, i) => {
+    s.cps.forEach((cp, j) => {
+      const tr = document.createElement("tr");
+      tr.dataset.id = s.id;
+      if (run && run.scenario === s) tr.classList.add("running");
+      if (j === 0) {
+        const span = s.cps.length;
+        const tdNum = document.createElement("td");
+        tdNum.textContent = i + 1;
+        tdNum.rowSpan = span;
+        const tdName = document.createElement("td");
+        tdName.rowSpan = span;
+        tdName.className = "setup";
+        const b = document.createElement("button");
+        b.textContent = run && run.scenario === s ? "Restart" : "Run";
+        b.dataset.run = s.id;
+        b.onclick = () => start(s.id);
+        const strong = document.createElement("b");
+        strong.textContent = " " + s.name;
+        tdName.append(b, strong, document.createElement("br"), s.setup);
+        const ev = (run && run.scenario === s ? run.events : (results[s.id] || {}).events) || [];
+        if (ev.length) {
+          const e = document.createElement("div");
+          e.className = "events";
+          e.textContent = "Handler calls: " + ev.join(", ");
+          tdName.appendChild(e);
+        }
+        tr.append(tdNum, tdName);
+      }
+      const tdQ = document.createElement("td");
+      tdQ.textContent = cp.q;
+      tr.appendChild(tdQ);
+      for (const k of ["hub", "os", "safari", "firefox", "patch"]) {
+        const td = document.createElement("td");
+        td.appendChild(known(cp[k]));
+        tr.appendChild(td);
+      }
+      tr.appendChild(meCell(s, cp, j));
+      tbody.appendChild(tr);
+    });
+  });
+}
+
+$("ua").textContent = navigator.userAgent;
+$("sources").innerHTML = "";
+for (const k of Object.keys(SOURCES)) {
+  const div = document.createElement("div");
+  div.textContent = SOURCES[k];
+  $("sources").appendChild(div);
+}
+$("stop").onclick = stop;
+$("clear").onclick = () => {
+  if (confirm("Clear this browser's recorded results?")) { stop(); results = {}; saveResults(); render(); }
+};
+$("copy").onclick = async () => {
+  const rows = ["| # | Scenario | Checkpoint | Chrome hub | Chrome OS | Safari | Firefox | Firefox + D322227 | This browser |",
+                "|---|---|---|---|---|---|---|---|---|"];
+  SCENARIOS.forEach((s, i) => s.cps.forEach((cp, j) => {
+    const r = results[s.id] || {};
+    rows.push(`| ${j ? "" : i + 1} | ${j ? "" : s.name} | ${cp.q} | ${cp.hub} | ${cp.os} | ${cp.safari} | ${cp.firefox} | ${cp.patch} | ${(r.obs || [])[j] || ""} |`);
+  }));
+  await navigator.clipboard.writeText(`This browser: ${navigator.userAgent}\n\n${rows.join("\n")}\n\n* predicted from source, not measured\n`);
+  log("Markdown copied");
+};
+render();
+
+// Automation entry points (used by run-matrix.js).
+window.testHarness = {
+  scenarios: () => SCENARIOS.map(s => ({ id: s.id, cps: s.cps.map(c => ({ q: c.q, after: c.after || null })) })),
+  start, stop, answer,
+  state: () => run ? { id: run.scenario.id, cps: run.cpState.slice() } : null,
+};
+</script>
+</body>
+</html>
